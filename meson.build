@@ -111,6 +111,8 @@ elif target_arm
     'src/tensor/kernels/gemm/gemm_neon.c',
     'src/tensor/kernels/gemv/gemv_neon.c',
     'src/tensor/kernels/gemm/gemm_bf16_neon.c',
+    'src/tensor/kernels/gemm/gemm_bf16_mmla.c',
+    'src/tensor/kernels/gemm/arm/bf16gemm_ukernel_neon.S',
   )
 endif
 

@@ -73,7 +73,9 @@ ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
     src/tensor/kernels/gemm/gemm_neon.o \
     src/tensor/kernels/gemm/arm/sgemm_ukernel_neon.o \
     src/tensor/kernels/gemv/gemv_neon.o \
-    src/tensor/kernels/gemm/gemm_bf16_neon.o
+    src/tensor/kernels/gemm/gemm_bf16_neon.o \
+    src/tensor/kernels/gemm/gemm_bf16_mmla.o \
+    src/tensor/kernels/gemm/arm/bf16gemm_ukernel_neon.o
   CHECK_ASM := tests/checkasm/arm/checkasm.S
 %.o: %.S
 	$(CC) $(CFLAGS) -c $< -o $@

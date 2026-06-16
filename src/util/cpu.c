@@ -1,6 +1,10 @@
 /*
  * peregrine - runtime CPU feature detection (implementation)
  */
+/* sysctl Darwin extensions are hidden under strict -std=c11 / _POSIX_C_SOURCE;
+ * _DARWIN_C_SOURCE re-exposes them (and the BSD types <sys/sysctl.h> needs). */
+#define _DARWIN_C_SOURCE 1
+
 #include "util/cpu.h"
 
 #include <string.h>
@@ -13,6 +17,16 @@
 #if PG_ARCH_AARCH64 && defined(__linux__)
 #  include <sys/auxv.h>
 #  include <asm/hwcap.h>
+#endif
+
+#if PG_ARCH_AARCH64 && defined(__APPLE__)
+#  include <sys/sysctl.h>
+static int pg_sysctl_flag(const char *name)
+{
+    int v = 0;
+    size_t sz = sizeof v;
+    return sysctlbyname(name, &v, &sz, NULL, 0) == 0 && v != 0;
+}
 #endif
 
 unsigned pg_get_cpu_flags(void)
@@ -42,9 +56,13 @@ unsigned pg_get_cpu_flags(void)
 #    ifdef HWCAP2_SVE2
         if (hw2 & HWCAP2_SVE2) flags |= PG_CPU_SVE2;
 #    endif
+#    ifdef HWCAP2_BF16
+        if (hw2 & HWCAP2_BF16) flags |= PG_CPU_BF16;
+#    endif
     }
+#  elif defined(__APPLE__)
+    if (pg_sysctl_flag("hw.optional.arm.FEAT_BF16")) flags |= PG_CPU_BF16;
 #  endif
-    /* macOS/Apple: SVE2 not exposed; NEON/AMX only. */
 #endif
 
     return flags;
@@ -56,6 +74,7 @@ const char *pg_cpu_flags_str(unsigned flags, char *buf, unsigned buflen)
         { PG_CPU_SSE2, "sse2" }, { PG_CPU_AVX2, "avx2" },
         { PG_CPU_FMA, "fma" },   { PG_CPU_AVX512, "avx512" },
         { PG_CPU_NEON, "neon" }, { PG_CPU_SVE2, "sve2" },
+        { PG_CPU_BF16, "bf16" },
     };
     unsigned i, off = 0;
     if (!buflen) return buf;

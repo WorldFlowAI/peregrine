@@ -19,8 +19,11 @@ paths; threadpool + tiled parallel driver.
 - [~] bf16/fp16 paths
       - [x] bf16 storage path (bf16->f32 convert in pack, reuse f32 microkernel)
             — portable fallback + correctness reference
-      - [ ] native bf16 compute microkernel (ARM BFMMLA, x86 AVX512-BF16) — the
-            optimized tier (~4x FLOPs/instruction over f32 FMLA)
+      - [x] native bf16 compute microkernel — ARM BFMMLA (8x8, 16 MAC/instr).
+            Correct + tested. Measured SLOWER than f32 FMLA on Apple (matrix
+            throughput is in AMX, not NEON BFMMLA); wins on full-rate-BFMMLA
+            server cores. Kept tested/benched; not auto-selected on Apple.
+      - [ ] native bf16 on x86 (AVX512-BF16 VDPBF16PS)
       - [ ] fp16 path
 - [ ] Benchmark vs OpenBLAS / cuBLAS-on-CPU baselines
 

@@ -50,6 +50,11 @@ void pg_bf16gemm_neon(size_t M, size_t N, size_t K,
                       const pg_bf16 *A, size_t lda,
                       const pg_bf16 *B, size_t ldb,
                       float *C, size_t ldc);
+/* native bf16-compute path (FEAT_BF16 / BFMMLA) - the optimized tier */
+void pg_bf16gemm_bfmmla(size_t M, size_t N, size_t K,
+                        const pg_bf16 *A, size_t lda,
+                        const pg_bf16 *B, size_t ldb,
+                        float *C, size_t ldc);
 #endif
 #if PG_ARCH_X86_64
 void pg_bf16gemm_avx2(size_t M, size_t N, size_t K,
