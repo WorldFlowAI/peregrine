@@ -28,6 +28,9 @@ static const struct {
     { "max",     checkasm_check_max },
     { "mul",     checkasm_check_mul },
     { "add",     checkasm_check_add },
+    { "silu",    checkasm_check_silu },
+    { "gelu",    checkasm_check_gelu },
+    { "softmax", checkasm_check_softmax },
 };
 
 /* ---- global run state --------------------------------------------------- */

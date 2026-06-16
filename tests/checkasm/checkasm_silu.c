@@ -1,0 +1,79 @@
+/*
+ * peregrine - checkasm module for f32 SiLU.
+ * Validates each variant against a double-precision oracle (so the C reference
+ * is proven now, and future NEON/AVX2 variants are checked the same way).
+ */
+#include "checkasm.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "util/cpu.h"
+#include "util/mem.h"
+#include "tensor/kernels/silu/silu.h"
+
+#define MAXN  (1u << 14)
+#define PAD   16
+
+static float *alloc_buf(size_t n)
+{
+    float *p = pg_aligned_alloc(PG_ALIGN, n * sizeof(float));
+    if (p) memset(p, 0, n * sizeof(float));
+    return p;
+}
+
+static int close_rel(float got, double ref)
+{
+    double tol = 1e-4 * fabs(ref) + 1e-6;
+    return fabs((double)got - ref) <= tol;
+}
+
+static void fuzz_variant(const PgSiluVariant *v, float *in, float *out)
+{
+    static const size_t edges[] = { 0, 1, 3, 7, 8, 15, 16, 17, 31, 32, 63, 64, 257 };
+    const float mags[] = { 0.5f, 1.0f, 5.0f, 10.0f };
+    int ok = 1;
+
+    for (int t = 0; t < 300 && ok; t++) {
+        int edge   = t < (int)(sizeof edges / sizeof edges[0]);
+        size_t n   = edge ? edges[t] : checkasm_rand_range(0, MAXN);
+        size_t off = edge ? 0 : checkasm_rand_range(0, PAD - 1);
+        float  mag = mags[checkasm_rng() & 3];
+        for (size_t i = 0; i < n; i++) in[off + i] = checkasm_randf(mag);
+
+        CK_CALL_UNARY(v->fn, in + off, out + off, n);
+
+        const char *reg;
+        if (checkasm_clobbered(&reg)) {
+            checkasm_fail("silu.%s n=%zu off=%zu clobbered callee-saved %s", v->name, n, off, reg);
+            ok = 0;
+            break;
+        }
+        for (size_t i = 0; i < n; i++) {
+            double x = in[off + i];
+            double ref = x / (1.0 + exp(-x));
+            if (!close_rel(out[off + i], ref)) {
+                checkasm_fail("silu.%s n=%zu i=%zu x=%g ref=%g got=%g", v->name, n, i, x, ref, out[off + i]);
+                ok = 0;
+                break;
+            }
+        }
+    }
+    checkasm_report("silu_f32", v->name, ok);
+}
+
+void checkasm_check_silu(void)
+{
+    size_t nv;
+    const PgSiluVariant *v = pg_silu_variants(&nv);
+    unsigned flags = pg_get_cpu_flags();
+    float *in = alloc_buf(MAXN + PAD), *out = alloc_buf(MAXN + PAD);
+
+    for (size_t i = 0; i < nv; i++)
+        if ((flags & v[i].req_flags) == v[i].req_flags)
+            fuzz_variant(&v[i], in, out);
+
+    pg_aligned_free(in);
+    pg_aligned_free(out);
+}
