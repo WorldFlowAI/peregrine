@@ -28,5 +28,11 @@ void pg_softmax_dsp_init(PgSoftmaxDSP *dsp, unsigned cpu_flags);
 const PgSoftmaxVariant *pg_softmax_variants(size_t *count);
 
 void pg_softmax_f32_c(const float *in, float *out, size_t n);
+#if PG_ARCH_X86_64
+void pg_softmax_f32_avx2(const float *in, float *out, size_t n);
+#endif
+#if PG_ARCH_AARCH64
+void pg_softmax_f32_neon(const float *in, float *out, size_t n);
+#endif
 
 #endif /* PEREGRINE_TENSOR_KERNELS_SOFTMAX_H */

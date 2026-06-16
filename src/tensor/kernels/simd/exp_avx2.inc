@@ -22,7 +22,8 @@ c_p4:    times 8 dd 1.6666665459e-1
 c_p5:    times 8 dd 5.0000001201e-1
 c_one:   times 8 dd 1.0
 c_hi:    times 8 dd 88.3762626647950
-c_lo:    times 8 dd -88.3762626647950
+c_lo:    times 8 dd -87.3365478515625   ; keeps m >= -126 (a lower clamp lets m
+                                        ; reach -128, making the 2^m bit-trick -inf)
 c_127i:  times 8 dd 127
 
 %macro EXP_PS_AVX2 1

@@ -40,7 +40,9 @@ const pg_exp_consts, align=4
     .float 5.0000001201e-1        /* p5 */
     .float 1.0                    /* one */
     .float 88.3762626647950       /* hi clamp */
-    .float -88.3762626647950      /* lo clamp */
+    .float -87.3365478515625      /* lo clamp: keeps m >= -126 so 2^m stays a
+                                     valid normal (a lower clamp lets m hit -128,
+                                     and the exponent-field trick then yields -inf) */
 endconst
 
 .macro EXP_LOAD_CONSTS
