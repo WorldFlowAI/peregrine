@@ -13,21 +13,30 @@ INIT_YMM avx2
 
 SECTION .text
 
-cglobal softmax_f32, 3, 6, 6, in, out, n
+cglobal softmax_f32, 3, 6, 8, in, out, n
     test        nq, nq
     jz          .done
 
-    ; ---- pass 1: max ----
+    ; ---- pass 1: max (4 accumulators to break the serial chain) ----
     mov         r5, inq
     vbroadcastss m4, [r5]
+    vmovaps     m5, m4
+    vmovaps     m6, m4
+    vmovaps     m7, m4
     mov         r3, nq
-    shr         r3, 3
+    shr         r3, 5                   ; n / 32
     jz          .p1red
 .p1:
     vmaxps      m4, m4, [r5]
-    add         r5, 32
+    vmaxps      m5, m5, [r5 + 32]
+    vmaxps      m6, m6, [r5 + 64]
+    vmaxps      m7, m7, [r5 + 96]
+    add         r5, 128
     dec         r3
     jnz         .p1
+    vmaxps      m4, m4, m5
+    vmaxps      m6, m6, m7
+    vmaxps      m4, m4, m6
 .p1red:
     vextractf128 xm0, m4, 1
     vmaxps      xm4, xm4, xm0
@@ -36,7 +45,7 @@ cglobal softmax_f32, 3, 6, 6, in, out, n
     vshufps     xm0, xm4, xm4, 0x4e
     vmaxps      xm4, xm4, xm0          ; xm4[0] = max of the vector part
     mov         r3, nq
-    and         r3, 7
+    and         r3, 31
     jz          .p1bc
 .p1t:
     vmaxss      xm4, xm4, [r5]

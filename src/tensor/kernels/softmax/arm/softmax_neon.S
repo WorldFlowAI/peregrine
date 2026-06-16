@@ -13,20 +13,29 @@ function softmax_f32_neon, export=1
     cbz     x2, 9f                   // n == 0
     EXP_LOAD_CONSTS
 
-    /* ---- pass 1: max ---- */
+    /* ---- pass 1: max (4 accumulators to break the serial chain) ---- */
     mov     x5, x0
     ldr     s5, [x5]
     dup     v5.4s, v5.s[0]           // seed accumulators with in[0]
-    lsr     x3, x2, #2
+    mov     v6.16b, v5.16b
+    mov     v7.16b, v5.16b
+    mov     v29.16b, v5.16b
+    lsr     x3, x2, #4               // n / 16
     cbz     x3, 2f
 1:
-    ld1     {v0.4s}, [x5], #16
+    ld1     {v0.4s, v1.4s, v2.4s, v3.4s}, [x5], #64
     fmax    v5.4s, v5.4s, v0.4s
+    fmax    v6.4s, v6.4s, v1.4s
+    fmax    v7.4s, v7.4s, v2.4s
+    fmax    v29.4s, v29.4s, v3.4s
     subs    x3, x3, #1
     b.ne    1b
+    fmax    v5.4s, v5.4s, v6.4s
+    fmax    v7.4s, v7.4s, v29.4s
+    fmax    v5.4s, v5.4s, v7.4s
 2:
     fmaxv   s5, v5.4s                // horizontal max
-    and     x4, x2, #3
+    and     x4, x2, #15              // n % 16
     cbz     x4, 3f
 10:
     ldr     s0, [x5], #4
