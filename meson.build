@@ -64,6 +64,7 @@ c_sources = files(
   'src/tensor/kernels/rope/rope_init.c',
   'src/tensor/kernels/gemm/gemm_ref.c',
   'src/tensor/kernels/gemm/gemm_init.c',
+  'src/tensor/kernels/gemm/gemm_blocked.c',
   'src/tensor/kernels/exp/exp_ref.c',
   'src/tensor/kernels/exp/exp_init.c',
 )
@@ -82,6 +83,8 @@ if target_x86
     'src/tensor/kernels/silu/x86/silu_avx2.asm',
     'src/tensor/kernels/gelu/x86/gelu_avx2.asm',
     'src/tensor/kernels/softmax/x86/softmax_avx2.asm',
+    'src/tensor/kernels/gemm/x86/sgemm_ukernel_avx2.asm',
+    'src/tensor/kernels/gemm/gemm_avx2.c',
   )
 elif target_arm
   asm_sources += files(
