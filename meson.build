@@ -56,6 +56,8 @@ c_sources = files(
   'src/tensor/kernels/gelu/gelu_init.c',
   'src/tensor/kernels/softmax/softmax_ref.c',
   'src/tensor/kernels/softmax/softmax_init.c',
+  'src/tensor/kernels/rope/rope_ref.c',
+  'src/tensor/kernels/rope/rope_init.c',
 )
 
 asm_sources = []

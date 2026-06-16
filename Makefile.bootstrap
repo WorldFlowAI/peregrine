@@ -36,7 +36,9 @@ C_SRC := \
   src/tensor/kernels/gelu/gelu_ref.c \
   src/tensor/kernels/gelu/gelu_init.c \
   src/tensor/kernels/softmax/softmax_ref.c \
-  src/tensor/kernels/softmax/softmax_init.c
+  src/tensor/kernels/softmax/softmax_init.c \
+  src/tensor/kernels/rope/rope_ref.c \
+  src/tensor/kernels/rope/rope_init.c
 
 OBJ := $(C_SRC:.c=.o)
 
@@ -92,7 +94,8 @@ CHECK_SRC := \
   tests/checkasm/checkasm_add.c \
   tests/checkasm/checkasm_silu.c \
   tests/checkasm/checkasm_gelu.c \
-  tests/checkasm/checkasm_softmax.c
+  tests/checkasm/checkasm_softmax.c \
+  tests/checkasm/checkasm_rope.c
 
 peregrine: src/cli/peregrine.c $(OBJ) $(ASM_OBJ)
 	$(CC) $(CFLAGS) $^ $(LDLIBS) -o $@

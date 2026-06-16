@@ -25,10 +25,15 @@ new kernel.
     AVX2 assembled-verified.
   - ✅ `sum`/`max` reductions and `mul`/`add` elementwise. NEON fuzz +
     clobber-tested (0/100 seeds), AVX2 assembled and exercised on x86 in CI.
-  - TODO transcendental: `softmax`, `silu`/`gelu`, `rope` — these need a
-    hand-written vectorised `exp` / `sincos` (polynomial + range reduction);
-    worth its own focused, accuracy-validated task. C references can land first
-    so dispatch works while the SIMD paths follow.
+  - Transcendental:
+    - ✅ C references + dispatch + checkasm: `silu`, `gelu` (tanh approx),
+      `softmax`, and `rope` (decoupled cos/sin cache + rotation; both pair
+      conventions; out-of-place / re-basable so cached KV chunks can be reused
+      at arbitrary positions). All validated against double-precision oracles.
+    - TODO SIMD: a hand-written vectorised `exp` (powers silu/gelu/softmax) and
+      `sincos` (powers the rope cache), NEON + AVX2, accuracy-validated. The
+      rope rotation itself is pure mul/add (no transcendentals) and gets its
+      own NEON/AVX2.
 - ✅ CI matrix (`.github/workflows/ci.yml`): build + checkasm on x86-64 (native +
   Intel SDE forcing SSE4/AVX2/AVX-512) and AArch64 (native NEON + QEMU `-cpu max`
   for SVE2 as it lands).
