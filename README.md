@@ -1,31 +1,57 @@
-# peregrine
+<p align="center">
+  <img src="peregrine.png" alt="Peregrine" width="640">
+</p>
 
-**FFmpeg for AI inference.** A C core with hand-written assembly — no
-intrinsics — built for extreme performance and broad hardware support, usable
-as a single CLI or linked as a library.
+<h1 align="center">Peregrine</h1>
 
-> Status: **pre-alpha (M0).** The architecture, build, and runtime CPU-dispatch
-> pipeline are in place and proven end-to-end on one kernel. The inference
-> engine itself is on the [roadmap](ROADMAP.md). `peregrine` is a placeholder
-> codename.
+<p align="center">
+  An inference engine for CPUs, written in C with hand-written assembly.
+  Think FFmpeg, but for running models.
+</p>
 
-## Why
+<p align="center">
+  <a href="https://github.com/WorldFlowAI/peregrine/actions/workflows/ci.yml">
+    <img src="https://github.com/WorldFlowAI/peregrine/actions/workflows/ci.yml/badge.svg" alt="CI">
+  </a>
+  <img src="https://img.shields.io/badge/license-BSD--2--Clause-blue.svg" alt="License: BSD-2-Clause">
+  <img src="https://img.shields.io/badge/arch-x86--64%20%7C%20ARM-informational" alt="Architectures">
+</p>
 
-`llama.cpp` made local inference ubiquitous with compiler *intrinsics*.
-`peregrine` follows FFmpeg and dav1d instead: a portable C reference for every
-operation, plus **hand-written assembly per instruction set, dispatched at
-runtime** — owning the registers and scheduling the compiler can't. Portable
-*and* peak. See [ARCHITECTURE.md](ARCHITECTURE.md).
+Status: pre-alpha. What runs today is the kernel foundation: runtime CPU
+detection and dispatch, the checkasm test harness (fuzzing, register-clobber
+checks, and benchmarks), and the first few kernels (`dot`, `axpy`, `rmsnorm`).
+All of it is green in CI on x86-64 and ARM. The actual inference engine, meaning
+model loading, the tokenizer, and the decode loop, is still ahead of us. See the
+[roadmap](ROADMAP.md). The name is a placeholder for now.
 
-## Try it now (no dependencies but a C compiler)
+## Why build this
+
+`llama.cpp` made local inference easy, and it gets its speed from compiler
+intrinsics. Peregrine takes the route FFmpeg and dav1d take instead. Every
+operation has a plain C version, and the parts that matter for speed are written
+in assembly by hand, one version per instruction set, chosen at runtime based on
+what the CPU actually supports.
+
+There are no intrinsics in the kernels. That is a deliberate choice: it means
+register allocation and instruction scheduling are ours to decide rather than
+the compiler's, which is where the last chunk of performance usually hides. The
+C version always works and runs anywhere, and it is the reference that every
+assembly version gets tested against.
+
+For the full picture, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Quick start
+
+You only need a C compiler.
 
 ```sh
 make -f Makefile.bootstrap test
 ```
 
-This builds the worked kernel (`dot_f32`: C reference + the host's hand-written
-asm — NEON on ARM, AVX2 on x86) and runs the checkasm correctness + throughput
-harness. Example on Apple Silicon:
+This builds one kernel (`dot_f32`: the C reference plus whichever assembly
+matches your machine, NEON on ARM or AVX2 on x86) and runs the checkasm harness,
+which fuzzes the assembly against the C reference and then times it. On an Apple
+Silicon Mac you get something like:
 
 ```
 peregrine checkasm: dot_f32
@@ -36,50 +62,58 @@ peregrine checkasm: dot_f32
 CHECKASM: PASS
 ```
 
-CLI:
+The CLI builds the same way:
 
 ```sh
 make -f Makefile.bootstrap peregrine && ./peregrine info
 ```
 
-## Build (canonical: Meson)
+## Building with Meson
+
+Meson is the real build. The bootstrap Makefile above is just a zero-dependency
+shortcut for the host architecture.
 
 ```sh
 meson setup build && meson compile -C build && meson test -C build
-./build/tests/checkasm --bench        # opt-in throughput table
+./build/tests/checkasm --bench        # throughput tables, off by default
 ```
 
-NASM is required on x86-64; on ARM the `.S` kernels assemble via the C compiler.
+You need NASM for the x86-64 assembly. On ARM the `.S` files go through the C
+compiler, so there is nothing extra to install.
 
-> **Apple Silicon gotcha:** Meson infers the target arch from the *Python it
-> runs under*. If your `python3` is an x86-64 build (common with a
-> pyenv/Homebrew install under Rosetta), Meson reports `cpu family: x86_64` on
-> an arm64 Mac and forces an `-arch x86_64` (Rosetta) build. Build with a
-> native-arch Meson instead:
-> ```sh
-> /usr/bin/python3 -m pip install --user meson      # Apple's universal python3 is arm64
-> /usr/bin/python3 -m mesonbuild.mesonmain setup build
-> ```
-> Or just use the dependency-free path: `make -f Makefile.bootstrap test`.
+One thing to watch on Apple Silicon: Meson picks the target architecture from
+the Python it runs under, not from the machine. If your `python3` came from
+pyenv or Homebrew and was built for x86-64 (so it runs under Rosetta), Meson
+will think the host is x86-64, print `cpu family: x86_64`, and produce an x86
+binary. Run Meson from a native arm64 Python to avoid that:
+
+```sh
+/usr/bin/python3 -m pip install --user meson
+/usr/bin/python3 -m mesonbuild.mesonmain setup build
+```
+
+The bootstrap Makefile keys off `uname -m`, so it always builds for the real
+host and sidesteps this entirely.
 
 ## Layout
 
 ```
-include/peregrine/        public C ABI (pg_ prefix)
-src/util/             cpu detection, aligned memory          (libavutil analog)
-src/tensor/kernels/   hand-written compute kernels + dispatch (the asm lives here)
-src/graph/  model/  token/  cli/    engine, loaders, tokenizer, CLI  (planned)
-tests/checkasm/       asm-vs-C correctness + microbenchmarks
+include/peregrine/    public C API (pg_ prefix)
+src/util/             CPU detection, aligned allocation
+src/tensor/kernels/   the kernels: a C reference plus per-ISA assembly, and the dispatch
+src/ext/              vendored assembly macro layers (x86inc.asm, dav1d asm.S)
+tests/checkasm/       correctness fuzzing, register-clobber checks, benchmarks
+src/graph/ model/ token/ cli/   engine, loaders, tokenizer, CLI (planned)
 ```
 
 ## Contributing
 
-The kernel-adding workflow, the no-intrinsics rule, and the checkasm
-requirement are in [CONTRIBUTING.md](CONTRIBUTING.md) and
-[doc/writing-asm.md](doc/writing-asm.md). Start by copying
-`src/tensor/kernels/dot/`.
+Adding a kernel and the testing it has to pass are written up in
+[CONTRIBUTING.md](CONTRIBUTING.md) and [doc/writing-asm.md](doc/writing-asm.md).
+The quickest way in is to copy `src/tensor/kernels/dot/` and follow the same
+shape: a C reference, the assembly, a dispatch table, and a checkasm entry.
 
 ## License
 
-BSD-2-Clause (see [LICENSE](LICENSE)). Vendored asm macro layers retain their
-upstream licenses.
+BSD-2-Clause, see [LICENSE](LICENSE). The vendored assembly macro layers keep
+their own upstream licenses; see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
