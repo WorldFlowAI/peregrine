@@ -19,6 +19,7 @@ checkasm = executable('checkasm',
   'checkasm/checkasm_gelu.c',
   'checkasm/checkasm_softmax.c',
   'checkasm/checkasm_rope.c',
+  'checkasm/checkasm_exp.c',
   checkasm_asm,
   include_directories : include_directories('checkasm'),
   dependencies : peregrine_dep)
