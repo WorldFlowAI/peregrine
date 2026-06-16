@@ -65,5 +65,13 @@ void pg_rope_cache_f32_c(float *cos, float *sin, const int32_t *positions,
                          size_t n_tokens, size_t head_dim, float theta_base);
 void pg_rope_f32_c(float *out, const float *in, const float *cos, const float *sin,
                    size_t n_tokens, size_t n_heads, size_t head_dim, PgRopeMode mode);
+#if PG_ARCH_X86_64
+void pg_rope_f32_avx2(float *out, const float *in, const float *cos, const float *sin,
+                      size_t n_tokens, size_t n_heads, size_t head_dim, PgRopeMode mode);
+#endif
+#if PG_ARCH_AARCH64
+void pg_rope_f32_neon(float *out, const float *in, const float *cos, const float *sin,
+                      size_t n_tokens, size_t n_heads, size_t head_dim, PgRopeMode mode);
+#endif
 
 #endif /* PEREGRINE_TENSOR_KERNELS_ROPE_H */
