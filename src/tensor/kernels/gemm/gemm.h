@@ -71,4 +71,28 @@ void pg_sgemm_blocked(size_t M, size_t N, size_t K,
                       float *C, size_t ldc,
                       size_t mr, size_t nr, pg_sgemm_ukernel_fn ukernel);
 
+/*
+ * Internal generic core: same packed + threaded structure, but the input matrix
+ * type is abstracted behind pack/scalar callbacks so f32 and (bf16/fp16) GEMMs
+ * share one driver. The packed panels and accumulation are always f32 (the
+ * callback converts on the way into the panel), so the same f32 microkernel is
+ * reused. A/B are passed as void* and the callbacks cast to the real type.
+ *   pack_a(dst, A, lda, ib, K, mr): dst[k*mr + r] = (float)A[(ib+r)*lda + k]
+ *   pack_b(dst, B, ldb, jb, K, nr): dst[k*nr + c] = (float)B[k*ldb + (jb+c)]
+ *   scalar(i, j, K, A, lda, B, ldb, C, ldc): C[i*ldc+j] = dot of row i, col j
+ */
+typedef void (*pg_gemm_pack_fn)(float *dst, const void *src, size_t ld,
+                                size_t base, size_t K, size_t blk);
+typedef void (*pg_gemm_scalar_fn)(size_t i, size_t j, size_t K,
+                                  const void *A, size_t lda,
+                                  const void *B, size_t ldb,
+                                  float *C, size_t ldc);
+void pg_gemm_blocked_generic(size_t M, size_t N, size_t K,
+                             const void *A, size_t lda,
+                             const void *B, size_t ldb,
+                             float *C, size_t ldc,
+                             size_t mr, size_t nr, pg_sgemm_ukernel_fn ukernel,
+                             pg_gemm_pack_fn pack_a, pg_gemm_pack_fn pack_b,
+                             pg_gemm_scalar_fn scalar);
+
 #endif /* PEREGRINE_TENSOR_KERNELS_GEMM_H */

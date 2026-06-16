@@ -20,6 +20,7 @@ enum PgCpuFlags {
     /* aarch64 */
     PG_CPU_NEON   = 1u << 8,
     PG_CPU_SVE2   = 1u << 9,
+    PG_CPU_BF16   = 1u << 10,  /* FEAT_BF16: BFMMLA / BFDOT */
 };
 
 /* Detect host CPU features. Cheap; safe to call more than once. */
