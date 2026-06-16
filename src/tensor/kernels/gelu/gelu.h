@@ -28,5 +28,11 @@ void pg_gelu_dsp_init(PgGeluDSP *dsp, unsigned cpu_flags);
 const PgGeluVariant *pg_gelu_variants(size_t *count);
 
 void pg_gelu_f32_c(const float *in, float *out, size_t n);
+#if PG_ARCH_X86_64
+void pg_gelu_f32_avx2(const float *in, float *out, size_t n);
+#endif
+#if PG_ARCH_AARCH64
+void pg_gelu_f32_neon(const float *in, float *out, size_t n);
+#endif
 
 #endif /* PEREGRINE_TENSOR_KERNELS_GELU_H */
