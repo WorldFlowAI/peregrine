@@ -1,0 +1,15 @@
+# build outputs
+/build/
+*.o
+*.a
+*.so
+*.dylib
+
+# bootstrap binaries
+/peregrine
+/checkasm_dot
+
+# editor / OS
+.DS_Store
+*.swp
+compile_commands.json

@@ -1,0 +1,9 @@
+option('tests', type : 'boolean', value : true,
+  description : 'Build the checkasm test/bench suite')
+
+# Force-disable specific ISA kernel families (default: build all the host
+# arch supports). Useful for size-constrained or bring-up builds.
+option('enable_avx512', type : 'boolean', value : true,
+  description : 'Build AVX-512 x86-64 kernels')
+option('enable_sve2', type : 'boolean', value : true,
+  description : 'Build SVE2 AArch64 kernels')

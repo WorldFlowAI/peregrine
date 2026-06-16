@@ -1,0 +1,82 @@
+# peregrine - zero-dependency bootstrap build (host arch only)
+#
+# The real build is Meson (see meson.build). This Makefile exists so you can
+# compile and run the worked kernel + checkasm with nothing but a C compiler:
+#
+#     make -f Makefile.bootstrap test
+#
+# It builds the CPU C code plus the hand-written asm for the HOST arch only
+# (NEON on aarch64, AVX2 via nasm on x86_64). Cross-arch is Meson's job.
+
+CC      ?= cc
+CFLAGS  ?= -O3 -Wall -Wextra -std=c11 -Iinclude -Isrc
+LDLIBS  ?= -lm
+
+UNAME_M := $(shell uname -m)
+
+C_SRC := \
+  src/util/cpu.c \
+  src/util/mem.c \
+  src/tensor/kernels/dot/dot_ref.c \
+  src/tensor/kernels/dot/dot_init.c \
+  src/tensor/kernels/axpy/axpy_ref.c \
+  src/tensor/kernels/axpy/axpy_init.c \
+  src/tensor/kernels/rmsnorm/rmsnorm_ref.c \
+  src/tensor/kernels/rmsnorm/rmsnorm_init.c
+
+OBJ := $(C_SRC:.c=.o)
+
+# --- host-arch assembly --------------------------------------------------
+# CHECK_ASM is the checkasm register-clobber trampoline for the host arch.
+ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
+  # clang/gcc assemble .S directly (runs the C preprocessor for our macros)
+  ASM_OBJ := \
+    src/tensor/kernels/dot/arm/dot_neon.o \
+    src/tensor/kernels/axpy/arm/axpy_neon.o \
+    src/tensor/kernels/rmsnorm/arm/rmsnorm_neon.o
+  CHECK_ASM := tests/checkasm/arm/checkasm.S
+%.o: %.S
+	$(CC) $(CFLAGS) -c $< -o $@
+endif
+
+ifeq ($(UNAME_M),x86_64)
+  NASM ?= nasm
+  ifeq ($(shell uname -s),Darwin)
+    NASMFMT := macho64
+  else
+    NASMFMT := elf64
+  endif
+  ASM_OBJ := \
+    src/tensor/kernels/dot/x86/dot_avx2.o \
+    src/tensor/kernels/axpy/x86/axpy_avx2.o \
+    src/tensor/kernels/rmsnorm/x86/rmsnorm_avx2.o
+  CHECK_ASM := tests/checkasm/x86/checkasm.o
+%.o: %.asm
+	$(NASM) -f $(NASMFMT) -I src/ $< -o $@
+endif
+
+# --- targets -------------------------------------------------------------
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+CHECK_SRC := \
+  tests/checkasm/checkasm.c \
+  tests/checkasm/checkasm_dot.c \
+  tests/checkasm/checkasm_axpy.c \
+  tests/checkasm/checkasm_rmsnorm.c
+
+peregrine: src/cli/peregrine.c $(OBJ) $(ASM_OBJ)
+	$(CC) $(CFLAGS) $^ $(LDLIBS) -o $@
+
+checkasm: $(CHECK_SRC) $(CHECK_ASM) $(OBJ) $(ASM_OBJ)
+	$(CC) $(CFLAGS) -Itests/checkasm $^ $(LDLIBS) -o $@
+
+.PHONY: test bench clean
+test: checkasm
+	./checkasm
+
+bench: checkasm
+	./checkasm --bench
+
+clean:
+	rm -f $(OBJ) $(ASM_OBJ) tests/checkasm/x86/checkasm.o peregrine checkasm

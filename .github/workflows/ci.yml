@@ -1,0 +1,67 @@
+name: ci
+
+# Build + checkasm across both architectures and, via emulation, across ISA
+# extension levels the runner hardware may not have:
+#   x86-64 : native, then Intel SDE forcing SSE/AVX2/AVX-512 paths
+#   arm64  : native NEON, then QEMU forcing other -cpu feature sets (e.g. SVE2)
+#
+# The kernel dispatch auto-selects the best ISA the (real or emulated) CPU
+# reports, so as SSE2 / AVX-512 / SVE2 kernels land they are exercised here
+# automatically with no workflow changes.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  x86_64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y meson ninja-build nasm
+      - name: Build
+        run: |
+          meson setup build
+          meson compile -C build
+      - name: checkasm (native)
+        run: meson test -C build --print-errorlogs
+      - name: checkasm under Intel SDE (forced ISA levels)
+        continue-on-error: true   # SDE download IDs rotate; keep the matrix green if it 404s
+        run: |
+          # Intel rotates the download path; bump SDE_VER / SDE_ID to the current release.
+          SDE_VER=9.44.0-2024-08-22
+          SDE_ID=831748
+          curl -fsSL -o sde.tar.xz \
+            "https://downloadmirror.intel.com/${SDE_ID}/sde-external-${SDE_VER}-lin.tar.xz"
+          tar xf sde.tar.xz
+          SDE="$(pwd)/sde-external-${SDE_VER}-lin/sde64"
+          # -p4p: Penryn (SSE4), -hsw: Haswell (AVX2), -skx/-spr: AVX-512
+          for isa in -p4p -hsw -skx -spr; do
+            echo "::group::SDE $isa"
+            "$SDE" "$isa" -- ./build/tests/checkasm --seed=0x1234abcd
+            echo "::endgroup::"
+          done
+
+  arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y meson ninja-build qemu-user
+      - name: Build
+        run: |
+          meson setup build
+          meson compile -C build
+      - name: checkasm (native NEON)
+        run: meson test -C build --print-errorlogs
+      - name: checkasm under QEMU (forced -cpu feature sets)
+        run: |
+          # qemu-user presents the chosen -cpu features to the guest regardless of
+          # host silicon, so 'max' exercises SVE/SVE2 paths as they are added.
+          for cpu in cortex-a72 neoverse-v1 max; do
+            echo "::group::qemu -cpu $cpu"
+            qemu-aarch64 -cpu "$cpu" ./build/tests/checkasm --seed=0x1234abcd
+            echo "::endgroup::"
+          done
