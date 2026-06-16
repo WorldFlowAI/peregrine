@@ -90,6 +90,7 @@ elif target_arm
     'src/tensor/kernels/silu/arm/silu_neon.S',
     'src/tensor/kernels/gelu/arm/gelu_neon.S',
     'src/tensor/kernels/softmax/arm/softmax_neon.S',
+    'src/tensor/kernels/rope/arm/rope_neon.S',
   )
 endif
 

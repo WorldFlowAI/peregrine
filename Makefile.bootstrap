@@ -59,7 +59,8 @@ ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
     src/tensor/kernels/exp/arm/exp_neon.o \
     src/tensor/kernels/silu/arm/silu_neon.o \
     src/tensor/kernels/gelu/arm/gelu_neon.o \
-    src/tensor/kernels/softmax/arm/softmax_neon.o
+    src/tensor/kernels/softmax/arm/softmax_neon.o \
+    src/tensor/kernels/rope/arm/rope_neon.o
   CHECK_ASM := tests/checkasm/arm/checkasm.S
 %.o: %.S
 	$(CC) $(CFLAGS) -c $< -o $@

@@ -5,7 +5,11 @@
 #include "util/cpu.h"
 
 static const PgRopeVariant g_variants[] = {
-    { "c", pg_rope_f32_c, 0 },
+#if PG_ARCH_AARCH64
+    { "neon", pg_rope_f32_neon, PG_CPU_NEON },
+#endif
+    /* x86-64 AVX2 rope (with interleaved-mode de-interleave) is a follow-up. */
+    { "c",    pg_rope_f32_c,    0 },
 };
 
 const PgRopeVariant *pg_rope_variants(size_t *count)
