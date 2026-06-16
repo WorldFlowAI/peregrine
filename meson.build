@@ -73,6 +73,7 @@ if target_x86
     'src/tensor/kernels/mul/x86/mul_avx2.asm',
     'src/tensor/kernels/add/x86/add_avx2.asm',
     'src/tensor/kernels/exp/x86/exp_avx2.asm',
+    'src/tensor/kernels/silu/x86/silu_avx2.asm',
   )
 elif target_arm
   asm_sources += files(
@@ -84,6 +85,7 @@ elif target_arm
     'src/tensor/kernels/mul/arm/mul_neon.S',
     'src/tensor/kernels/add/arm/add_neon.S',
     'src/tensor/kernels/exp/arm/exp_neon.S',
+    'src/tensor/kernels/silu/arm/silu_neon.S',
   )
 endif
 
