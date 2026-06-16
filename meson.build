@@ -22,6 +22,9 @@ target_arm = cc.get_define('__aarch64__') != ''
 # needed for Linux/glibc builds.
 add_project_arguments('-D_POSIX_C_SOURCE=200809L', language : 'c')
 
+# libm is separate on Linux/glibc (rmsnorm uses sqrtf); a no-op on macOS.
+m_dep = cc.find_library('m', required : false)
+
 # NASM is only needed on x86-64; on ARM the .S kernels go through the C
 # compiler's integrated assembler.
 if target_x86
@@ -59,11 +62,13 @@ endif
 libperegrine = static_library('peregrine',
   c_sources, asm_sources,
   include_directories : incdir,
+  dependencies : m_dep,
   install : true)
 
 peregrine_dep = declare_dependency(
   link_with : libperegrine,
-  include_directories : incdir)
+  include_directories : incdir,
+  dependencies : m_dep)
 
 executable('peregrine',
   'src/cli/peregrine.c',
