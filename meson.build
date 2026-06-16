@@ -50,6 +50,12 @@ c_sources = files(
   'src/tensor/kernels/mul/mul_init.c',
   'src/tensor/kernels/add/add_ref.c',
   'src/tensor/kernels/add/add_init.c',
+  'src/tensor/kernels/silu/silu_ref.c',
+  'src/tensor/kernels/silu/silu_init.c',
+  'src/tensor/kernels/gelu/gelu_ref.c',
+  'src/tensor/kernels/gelu/gelu_init.c',
+  'src/tensor/kernels/softmax/softmax_ref.c',
+  'src/tensor/kernels/softmax/softmax_init.c',
 )
 
 asm_sources = []
