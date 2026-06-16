@@ -8,6 +8,7 @@
  */
 #include "checkasm.h"
 
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -31,11 +32,23 @@ static int supported(const PgDotVariant *v, unsigned flags)
     return (flags & v->req_flags) == v->req_flags;
 }
 
-static int close_enough(float ref, float got)
+/* Work = sum of |a_i*b_i|. A dot of signed inputs can cancel almost completely
+ * (small result, huge intermediate magnitudes), so the meaningful error scale
+ * is the standard floating-summation bound ~ eps * work, NOT eps * |result|. */
+static double dot_work(const float *a, const float *b, size_t n)
 {
-    /* A real bug is off by O(|ref|); this tolerance only absorbs the
-     * reordering of float accumulation between scalar C and SIMD. */
-    float tol = 2e-3f * (fabsf(ref) + 1.0f);
+    double s = 0.0;
+    for (size_t i = 0; i < n; i++)
+        s += fabs((double)a[i] * (double)b[i]);
+    return s;
+}
+
+static int close_enough(float ref, float got, double work)
+{
+    /* Inherent reordering error of two summation orders is bounded by a small
+     * multiple of eps*work; a real kernel bug is off by O(work) or O(result),
+     * far above this floor. */
+    float tol = 1e-4f + (float)(16.0 * (double)FLT_EPSILON * work);
     return fabsf(ref - got) <= tol;
 }
 
@@ -58,7 +71,7 @@ static void fuzz_variant(const PgDotVariant *v, float *a, float *b)
         if (checkasm_clobbered(&reg)) {
             checkasm_fail("dot.%s edge n=%zu clobbered callee-saved %s", v->name, n, reg);
             ok = 0;
-        } else if (!close_enough(ref, got)) {
+        } else if (!close_enough(ref, got, dot_work(a, b, n))) {
             checkasm_fail("dot.%s edge n=%zu off=0 ref=%.6g got=%.6g", v->name, n, ref, got);
             ok = 0;
         }
@@ -78,7 +91,7 @@ static void fuzz_variant(const PgDotVariant *v, float *a, float *b)
             checkasm_fail("dot.%s rand n=%zu off=%zu clobbered callee-saved %s",
                           v->name, n, off, reg);
             ok = 0;
-        } else if (!close_enough(ref, got)) {
+        } else if (!close_enough(ref, got, dot_work(pa, pb, n))) {
             checkasm_fail("dot.%s rand n=%zu off=%zu mag=%g ref=%.6g got=%.6g",
                           v->name, n, off, mag, ref, got);
             ok = 0;
