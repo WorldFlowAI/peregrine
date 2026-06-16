@@ -101,6 +101,27 @@ static void fuzz_variant(const PgRopeVariant *v, float *x, float *out, float *tm
     checkasm_report("rope_f32", v->name, ok);
 }
 
+static double bench_variant(pg_rope_f32_fn fn, float *out, const float *in,
+                            const float *c, const float *s,
+                            size_t nt, size_t nh, size_t hd, double *melems)
+{
+    volatile float sink = 0;
+    int iters = 1;
+    double el = 0.0;
+    fn(out, in, c, s, nt, nh, hd, PG_ROPE_NEOX);
+    do {
+        double t0 = checkasm_now();
+        for (int i = 0; i < iters; i++) fn(out, in, c, s, nt, nh, hd, PG_ROPE_NEOX);
+        el = checkasm_now() - t0;
+        if (el < 0.05) iters *= 2;
+    } while (el < 0.05 && iters < (1 << 28));
+    sink += out[0];
+    (void)sink;
+    double per = el / iters;
+    *melems = (double)(nt * nh * hd) / per / 1e6;
+    return per;
+}
+
 void checkasm_check_rope(void)
 {
     size_t nv;
@@ -114,6 +135,30 @@ void checkasm_check_rope(void)
     for (size_t i = 0; i < nv; i++)
         if ((flags & v[i].req_flags) == v[i].req_flags)
             fuzz_variant(&v[i], x, out, tmp, cosb, sinb, pos);
+
+    if (checkasm_bench_enabled()) {
+        const size_t hd = 128, nh = 8, half = hd / 2;
+        static const size_t toks[] = { 128, 1024, 8192 };
+        for (size_t ti = 0; ti < sizeof toks / sizeof toks[0]; ti++) {
+            size_t nt = toks[ti], total = nt * nh * hd, cn = nt * half;
+            float *bx = fbuf(total), *bo = fbuf(total), *bc = fbuf(cn), *bs = fbuf(cn);
+            int32_t *bp = pg_aligned_alloc(PG_ALIGN, nt * sizeof(int32_t));
+            for (size_t i = 0; i < nt; i++) bp[i] = (int32_t)i;
+            pg_rope_cache_f32_c(bc, bs, bp, nt, hd, 10000.0f);
+            for (size_t k = 0; k < total; k++) bx[k] = checkasm_randf(1.0f);
+            char title[48];
+            snprintf(title, sizeof title, "rope_f32  tokens=%zu", nt);
+            checkasm_bench_begin(title, "Melem/s");
+            for (size_t i = 0; i < nv; i++) {
+                if ((flags & v[i].req_flags) != v[i].req_flags) continue;
+                double m, per = bench_variant(v[i].fn, bo, bx, bc, bs, nt, nh, hd, &m);
+                checkasm_bench_row(v[i].name, per, m);
+            }
+            checkasm_bench_end();
+            pg_aligned_free(bx); pg_aligned_free(bo); pg_aligned_free(bc);
+            pg_aligned_free(bs); pg_aligned_free(bp);
+        }
+    }
 
     pg_aligned_free(x); pg_aligned_free(out); pg_aligned_free(tmp);
     pg_aligned_free(cosb); pg_aligned_free(sinb); pg_aligned_free(pos);
