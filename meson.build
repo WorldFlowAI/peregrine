@@ -42,6 +42,14 @@ c_sources = files(
   'src/tensor/kernels/axpy/axpy_init.c',
   'src/tensor/kernels/rmsnorm/rmsnorm_ref.c',
   'src/tensor/kernels/rmsnorm/rmsnorm_init.c',
+  'src/tensor/kernels/sum/sum_ref.c',
+  'src/tensor/kernels/sum/sum_init.c',
+  'src/tensor/kernels/max/max_ref.c',
+  'src/tensor/kernels/max/max_init.c',
+  'src/tensor/kernels/mul/mul_ref.c',
+  'src/tensor/kernels/mul/mul_init.c',
+  'src/tensor/kernels/add/add_ref.c',
+  'src/tensor/kernels/add/add_init.c',
 )
 
 asm_sources = []
@@ -50,12 +58,20 @@ if target_x86
     'src/tensor/kernels/dot/x86/dot_avx2.asm',
     'src/tensor/kernels/axpy/x86/axpy_avx2.asm',
     'src/tensor/kernels/rmsnorm/x86/rmsnorm_avx2.asm',
+    'src/tensor/kernels/sum/x86/sum_avx2.asm',
+    'src/tensor/kernels/max/x86/max_avx2.asm',
+    'src/tensor/kernels/mul/x86/mul_avx2.asm',
+    'src/tensor/kernels/add/x86/add_avx2.asm',
   )
 elif target_arm
   asm_sources += files(
     'src/tensor/kernels/dot/arm/dot_neon.S',
     'src/tensor/kernels/axpy/arm/axpy_neon.S',
     'src/tensor/kernels/rmsnorm/arm/rmsnorm_neon.S',
+    'src/tensor/kernels/sum/arm/sum_neon.S',
+    'src/tensor/kernels/max/arm/max_neon.S',
+    'src/tensor/kernels/mul/arm/mul_neon.S',
+    'src/tensor/kernels/add/arm/add_neon.S',
   )
 endif
 

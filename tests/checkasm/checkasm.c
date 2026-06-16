@@ -24,6 +24,10 @@ static const struct {
     { "dot",     checkasm_check_dot },
     { "axpy",    checkasm_check_axpy },
     { "rmsnorm", checkasm_check_rmsnorm },
+    { "sum",     checkasm_check_sum },
+    { "max",     checkasm_check_max },
+    { "mul",     checkasm_check_mul },
+    { "add",     checkasm_check_add },
 };
 
 /* ---- global run state --------------------------------------------------- */

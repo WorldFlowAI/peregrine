@@ -27,18 +27,24 @@ jobs:
           meson compile -C build
       - name: checkasm (native)
         run: meson test -C build --print-errorlogs
-      - name: checkasm under Intel SDE (forced ISA levels)
-        continue-on-error: true   # SDE download IDs rotate; keep the matrix green if it 404s
+      - name: checkasm under Intel SDE (forced ISA levels, best-effort)
         run: |
-          # Intel rotates the download path; bump SDE_VER / SDE_ID to the current release.
-          SDE_VER=9.44.0-2024-08-22
-          SDE_ID=831748
-          curl -fsSL -o sde.tar.xz \
-            "https://downloadmirror.intel.com/${SDE_ID}/sde-external-${SDE_VER}-lin.tar.xz"
-          tar xf sde.tar.xz
+          set -u
+          # Intel SDE runs the x86 binary as if on Penryn / Haswell / Skylake-X /
+          # Sapphire Rapids, which exercises the SSE4 / AVX2 / AVX-512 paths as
+          # kernels add them. The SDE download is license-gated and its URL id
+          # rotates, so this step is best-effort: if it can't be fetched it skips
+          # without failing the job (the native AVX2 run above already covers
+          # today's kernels). Update SDE_VER / SDE_ID when a new SDE ships.
+          SDE_VER=9.53.0-2025-03-16
+          SDE_ID=843185
+          url="https://downloadmirror.intel.com/${SDE_ID}/sde-external-${SDE_VER}-lin.tar.xz"
+          if ! curl -fsSL -o sde.tar.xz "$url" || ! tar xf sde.tar.xz 2>/dev/null; then
+            echo "::notice::Intel SDE unavailable (fetch/extract failed for ${url}); skipping ISA emulation."
+            exit 0
+          fi
           SDE="$(pwd)/sde-external-${SDE_VER}-lin/sde64"
-          # -p4p: Penryn (SSE4), -hsw: Haswell (AVX2), -skx/-spr: AVX-512
-          for isa in -p4p -hsw -skx -spr; do
+          for isa in -p4p -hsw -skx -spr; do   # SSE4, AVX2, AVX-512 (SKX), AVX-512 (SPR)
             echo "::group::SDE $isa"
             "$SDE" "$isa" -- ./build/tests/checkasm --seed=0x1234abcd
             echo "::endgroup::"

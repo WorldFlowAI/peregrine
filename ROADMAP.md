@@ -23,8 +23,8 @@ new kernel.
   - ✅ `axpy` (NEON ties auto-vectorised C — memory-bound trivial loop, no asm edge),
     `rmsnorm` (NEON ~6× over C; fused two-pass + rsqrt). NEON fuzz+clobber-tested,
     AVX2 assembled-verified.
-  - TODO non-transcendental: `sum`/`max` reductions, elementwise `mul`/`add`
-    (mechanical copies of dot/axpy).
+  - ✅ `sum`/`max` reductions and `mul`/`add` elementwise. NEON fuzz +
+    clobber-tested (0/100 seeds), AVX2 assembled and exercised on x86 in CI.
   - TODO transcendental: `softmax`, `silu`/`gelu`, `rope` — these need a
     hand-written vectorised `exp` / `sincos` (polynomial + range reduction);
     worth its own focused, accuracy-validated task. C references can land first

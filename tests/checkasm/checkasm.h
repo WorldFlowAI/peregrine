@@ -24,6 +24,10 @@
 void checkasm_check_dot(void);
 void checkasm_check_axpy(void);
 void checkasm_check_rmsnorm(void);
+void checkasm_check_sum(void);
+void checkasm_check_max(void);
+void checkasm_check_mul(void);
+void checkasm_check_add(void);
 
 /* ---- randomness (seedable, reproducible) -------------------------------- */
 /* Uniform 64-bit value from the run's PRNG (xoshiro256**, seeded once). */
@@ -68,10 +72,18 @@ void checkasm_checked_call(void);   /* opaque; only ever called via the casts */
 #  define CK_CALL_RMSNORM(fn, o, x, w, n, eps) \
      ((void (*)(void *, float *, const float *, const float *, size_t, float))checkasm_checked_call) \
          ((void *)(fn), (o), (x), (w), (n), (eps))
+#  define CK_CALL_REDUCE(fn, x, n) \
+     ((float (*)(void *, const float *, size_t))checkasm_checked_call) \
+         ((void *)(fn), (x), (n))
+#  define CK_CALL_BINOP(fn, a, b, o, n) \
+     ((void (*)(void *, const float *, const float *, float *, size_t))checkasm_checked_call) \
+         ((void *)(fn), (a), (b), (o), (n))
 #else
 #  define CK_CALL_DOT(fn, a, b, n)             (fn)((a), (b), (n))
 #  define CK_CALL_AXPY(fn, al, x, y, n)        (fn)((al), (x), (y), (n))
 #  define CK_CALL_RMSNORM(fn, o, x, w, n, eps) (fn)((o), (x), (w), (n), (eps))
+#  define CK_CALL_REDUCE(fn, x, n)             (fn)((x), (n))
+#  define CK_CALL_BINOP(fn, a, b, o, n)        (fn)((a), (b), (o), (n))
 #endif
 
 /*
