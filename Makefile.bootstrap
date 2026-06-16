@@ -79,7 +79,11 @@ ifeq ($(UNAME_M),x86_64)
     src/tensor/kernels/sum/x86/sum_avx2.o \
     src/tensor/kernels/max/x86/max_avx2.o \
     src/tensor/kernels/mul/x86/mul_avx2.o \
-    src/tensor/kernels/add/x86/add_avx2.o
+    src/tensor/kernels/add/x86/add_avx2.o \
+    src/tensor/kernels/exp/x86/exp_avx2.o \
+    src/tensor/kernels/silu/x86/silu_avx2.o \
+    src/tensor/kernels/gelu/x86/gelu_avx2.o \
+    src/tensor/kernels/softmax/x86/softmax_avx2.o
   CHECK_ASM := tests/checkasm/x86/checkasm.o
 %.o: %.asm
 	$(NASM) -f $(NASMFMT) -I src/ $< -o $@
