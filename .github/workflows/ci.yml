@@ -27,6 +27,8 @@ jobs:
           meson compile -C build
       - name: checkasm (native)
         run: meson test -C build --print-errorlogs
+      - name: checkasm --bench (native, informational)
+        run: ./build/tests/checkasm --bench --seed=0x1
       - name: checkasm under Intel SDE (forced ISA levels, best-effort)
         run: |
           set -u
