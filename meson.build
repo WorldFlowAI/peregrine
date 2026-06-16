@@ -17,6 +17,11 @@ cc = meson.get_compiler('c')
 target_x86 = cc.get_define('__x86_64__') != ''
 target_arm = cc.get_define('__aarch64__') != ''
 
+# With -std=c11, glibc hides POSIX symbols (clock_gettime, posix_memalign, ...)
+# unless a feature-test macro is set. macOS exposes them regardless, so this is
+# needed for Linux/glibc builds.
+add_project_arguments('-D_POSIX_C_SOURCE=200809L', language : 'c')
+
 # NASM is only needed on x86-64; on ARM the .S kernels go through the C
 # compiler's integrated assembler.
 if target_x86
