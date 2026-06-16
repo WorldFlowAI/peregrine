@@ -4,10 +4,24 @@ Milestones are vertical slices: each ends with something runnable and tested,
 not a half-built layer. "Done" always includes a passing checkasm entry for any
 new kernel.
 
-## M2 — GEMM
-- Register-blocked, cache-tiled f32 GEMM/GEMV microkernels per ISA.
-- bf16/fp16 paths. Benchmark vs OpenBLAS/cuBLAS-on-CPU baselines.
-- Threadpool (`util/thread`) + tiled parallel driver.
+## M2 — GEMM  (in progress)
+Register-blocked, cache-tiled f32 GEMM/GEMV microkernels per ISA; bf16/fp16
+paths; threadpool + tiled parallel driver.
+
+- [x] f32 GEMM C reference + checkasm (double oracle, reduction-aware tolerance)
+- [x] Register-blocked SGEMM microkernels per ISA — NEON 8x8, x86 AVX2 6x16
+- [x] Threadpool (`util/thread`) + parallel driver (partition over row-blocks)
+- [x] GEMV per ISA — threaded dot-per-row over the existing per-ISA dot kernels
+      (a GEMV row is a dot; reuse beats a redundant microkernel)
+- [~] Cache tiling — measured unnecessary on Apple Silicon (compute-bound through
+      2048^3); deferred to hardware where the working set spills, behind a
+      C-accumulating microkernel
+- [ ] bf16/fp16 paths
+- [ ] Benchmark vs OpenBLAS / cuBLAS-on-CPU baselines
+
+Measured (Apple Silicon, 12-core): f32 SGEMM 105 GFLOP/s single-core ->
+825 GFLOP/s @ 2048^3 (~31x scalar C). x86 AVX2 paths correctness-validated on CI
+(Intel SDE).
 
 ## M3 — Run a model (the "it works" moment)
 - `model/`: mmap GGUF + safetensors loaders (zero-copy tensor views).
