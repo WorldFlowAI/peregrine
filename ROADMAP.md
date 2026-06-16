@@ -4,40 +4,6 @@ Milestones are vertical slices: each ends with something runnable and tested,
 not a half-built layer. "Done" always includes a passing checkasm entry for any
 new kernel.
 
-## M1 — Kernel foundation
-- ✅ `x86inc.asm` macro layer (cglobal / ABI / auto-vzeroupper) + ARM `asm.S`
-  macros, vendored from dav1d (licenses kept in `src/ext/`); `dot` refactored
-  onto them.
-- ✅ Install Meson and verify — native arm64 build + `meson test` green (see
-  the Apple Silicon / Rosetta-Python note in README).
-- ✅ checkasm framework: per-variant fuzzing (random size/alignment/magnitude +
-  edge sizes), `--bench` throughput table with speedups, `--seed`/`--test`.
-- ✅ Register-clobber check (callee-saved preservation via asm trampolines):
-  AArch64 done + tested (proven to catch a real clobber); x86-64 SysV done +
-  assembled-verified. *TODO:* Win64 ABI (rsi/rdi/xmm6-15) + runtime-verify x86
-  on real hardware/CI.
-- ✅ Detailed plan for the internal benchmark framework + llama.cpp head-to-head
-  baseline — see `doc/benchmarking-plan.md` (phased: kernel-level now,
-  end-to-end at M3).
-- Primitive kernels (C ref + NEON + AVX2 + checkasm + bench):
-  - ✅ `axpy` (NEON ties auto-vectorised C — memory-bound trivial loop, no asm edge),
-    `rmsnorm` (NEON ~6× over C; fused two-pass + rsqrt). NEON fuzz+clobber-tested,
-    AVX2 assembled-verified.
-  - ✅ `sum`/`max` reductions and `mul`/`add` elementwise. NEON fuzz +
-    clobber-tested (0/100 seeds), AVX2 assembled and exercised on x86 in CI.
-  - Transcendental:
-    - ✅ C references + dispatch + checkasm: `silu`, `gelu` (tanh approx),
-      `softmax`, and `rope` (decoupled cos/sin cache + rotation; both pair
-      conventions; out-of-place / re-basable so cached KV chunks can be reused
-      at arbitrary positions). All validated against double-precision oracles.
-    - TODO SIMD: a hand-written vectorised `exp` (powers silu/gelu/softmax) and
-      `sincos` (powers the rope cache), NEON + AVX2, accuracy-validated. The
-      rope rotation itself is pure mul/add (no transcendentals) and gets its
-      own NEON/AVX2.
-- ✅ CI matrix (`.github/workflows/ci.yml`): build + checkasm on x86-64 (native +
-  Intel SDE forcing SSE4/AVX2/AVX-512) and AArch64 (native NEON + QEMU `-cpu max`
-  for SVE2 as it lands).
-
 ## M2 — GEMM
 - Register-blocked, cache-tiled f32 GEMM/GEMV microkernels per ISA.
 - bf16/fp16 paths. Benchmark vs OpenBLAS/cuBLAS-on-CPU baselines.

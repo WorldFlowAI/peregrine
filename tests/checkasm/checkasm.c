@@ -33,6 +33,7 @@ static const struct {
     { "softmax", checkasm_check_softmax },
     { "rope",    checkasm_check_rope },
     { "exp",     checkasm_check_exp },
+    { "gemm",    checkasm_check_gemm },
 };
 
 /* ---- global run state --------------------------------------------------- */

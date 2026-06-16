@@ -33,6 +33,7 @@ void checkasm_check_gelu(void);
 void checkasm_check_softmax(void);
 void checkasm_check_rope(void);
 void checkasm_check_exp(void);
+void checkasm_check_gemm(void);
 
 /* ---- randomness (seedable, reproducible) -------------------------------- */
 /* Uniform 64-bit value from the run's PRNG (xoshiro256**, seeded once). */

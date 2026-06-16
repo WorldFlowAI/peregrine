@@ -39,6 +39,8 @@ C_SRC := \
   src/tensor/kernels/softmax/softmax_init.c \
   src/tensor/kernels/rope/rope_ref.c \
   src/tensor/kernels/rope/rope_init.c \
+  src/tensor/kernels/gemm/gemm_ref.c \
+  src/tensor/kernels/gemm/gemm_init.c \
   src/tensor/kernels/exp/exp_ref.c \
   src/tensor/kernels/exp/exp_init.c
 
@@ -60,7 +62,9 @@ ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
     src/tensor/kernels/silu/arm/silu_neon.o \
     src/tensor/kernels/gelu/arm/gelu_neon.o \
     src/tensor/kernels/softmax/arm/softmax_neon.o \
-    src/tensor/kernels/rope/arm/rope_neon.o
+    src/tensor/kernels/rope/arm/rope_neon.o \
+    src/tensor/kernels/gemm/gemm_neon.o \
+    src/tensor/kernels/gemm/arm/sgemm_ukernel_neon.o
   CHECK_ASM := tests/checkasm/arm/checkasm.S
 %.o: %.S
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -107,7 +111,8 @@ CHECK_SRC := \
   tests/checkasm/checkasm_gelu.c \
   tests/checkasm/checkasm_softmax.c \
   tests/checkasm/checkasm_rope.c \
-  tests/checkasm/checkasm_exp.c
+  tests/checkasm/checkasm_exp.c \
+  tests/checkasm/checkasm_gemm.c
 
 peregrine: src/cli/peregrine.c $(OBJ) $(ASM_OBJ)
 	$(CC) $(CFLAGS) $^ $(LDLIBS) -o $@

@@ -58,6 +58,8 @@ c_sources = files(
   'src/tensor/kernels/softmax/softmax_init.c',
   'src/tensor/kernels/rope/rope_ref.c',
   'src/tensor/kernels/rope/rope_init.c',
+  'src/tensor/kernels/gemm/gemm_ref.c',
+  'src/tensor/kernels/gemm/gemm_init.c',
   'src/tensor/kernels/exp/exp_ref.c',
   'src/tensor/kernels/exp/exp_init.c',
 )
@@ -91,6 +93,8 @@ elif target_arm
     'src/tensor/kernels/gelu/arm/gelu_neon.S',
     'src/tensor/kernels/softmax/arm/softmax_neon.S',
     'src/tensor/kernels/rope/arm/rope_neon.S',
+    'src/tensor/kernels/gemm/arm/sgemm_ukernel_neon.S',
+    'src/tensor/kernels/gemm/gemm_neon.c',
   )
 endif
 
