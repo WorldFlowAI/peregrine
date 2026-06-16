@@ -118,7 +118,7 @@ void checkasm_check_gemm(void)
             fuzz_variant(&v[i], A, B, C, ref, work);
 
     if (checkasm_bench_enabled()) {
-        static const size_t dims[] = { 128, 256, 512 };
+        static const size_t dims[] = { 256, 512, 1024, 2048 };
         for (size_t s = 0; s < sizeof dims / sizeof dims[0]; s++) {
             size_t n = dims[s];
             float *bA = fbuf(n * n), *bB = fbuf(n * n), *bC = fbuf(n * n);
