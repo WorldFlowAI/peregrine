@@ -68,6 +68,8 @@ c_sources = files(
   'src/tensor/kernels/gemv/gemv_ref.c',
   'src/tensor/kernels/gemv/gemv_init.c',
   'src/tensor/kernels/gemv/gemv_driver.c',
+  'src/tensor/kernels/gemm/gemm_bf16.c',
+  'src/tensor/kernels/gemm/gemm_bf16_init.c',
   'src/tensor/kernels/exp/exp_ref.c',
   'src/tensor/kernels/exp/exp_init.c',
 )
@@ -89,6 +91,7 @@ if target_x86
     'src/tensor/kernels/gemm/x86/sgemm_ukernel_avx2.asm',
     'src/tensor/kernels/gemm/gemm_avx2.c',
     'src/tensor/kernels/gemv/gemv_avx2.c',
+    'src/tensor/kernels/gemm/gemm_bf16_avx2.c',
   )
 elif target_arm
   asm_sources += files(
@@ -107,6 +110,7 @@ elif target_arm
     'src/tensor/kernels/gemm/arm/sgemm_ukernel_neon.S',
     'src/tensor/kernels/gemm/gemm_neon.c',
     'src/tensor/kernels/gemv/gemv_neon.c',
+    'src/tensor/kernels/gemm/gemm_bf16_neon.c',
   )
 endif
 

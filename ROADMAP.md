@@ -16,7 +16,12 @@ paths; threadpool + tiled parallel driver.
 - [~] Cache tiling — measured unnecessary on Apple Silicon (compute-bound through
       2048^3); deferred to hardware where the working set spills, behind a
       C-accumulating microkernel
-- [ ] bf16/fp16 paths
+- [~] bf16/fp16 paths
+      - [x] bf16 storage path (bf16->f32 convert in pack, reuse f32 microkernel)
+            — portable fallback + correctness reference
+      - [ ] native bf16 compute microkernel (ARM BFMMLA, x86 AVX512-BF16) — the
+            optimized tier (~4x FLOPs/instruction over f32 FMLA)
+      - [ ] fp16 path
 - [ ] Benchmark vs OpenBLAS / cuBLAS-on-CPU baselines
 
 Measured (Apple Silicon, 12-core): f32 SGEMM 105 GFLOP/s single-core ->
