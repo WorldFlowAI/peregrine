@@ -43,6 +43,9 @@ C_SRC := \
   src/tensor/kernels/gemm/gemm_ref.c \
   src/tensor/kernels/gemm/gemm_init.c \
   src/tensor/kernels/gemm/gemm_blocked.c \
+  src/tensor/kernels/gemv/gemv_ref.c \
+  src/tensor/kernels/gemv/gemv_init.c \
+  src/tensor/kernels/gemv/gemv_driver.c \
   src/tensor/kernels/exp/exp_ref.c \
   src/tensor/kernels/exp/exp_init.c
 
@@ -66,7 +69,8 @@ ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
     src/tensor/kernels/softmax/arm/softmax_neon.o \
     src/tensor/kernels/rope/arm/rope_neon.o \
     src/tensor/kernels/gemm/gemm_neon.o \
-    src/tensor/kernels/gemm/arm/sgemm_ukernel_neon.o
+    src/tensor/kernels/gemm/arm/sgemm_ukernel_neon.o \
+    src/tensor/kernels/gemv/gemv_neon.o
   CHECK_ASM := tests/checkasm/arm/checkasm.S
 %.o: %.S
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -92,7 +96,8 @@ ifeq ($(UNAME_M),x86_64)
     src/tensor/kernels/gelu/x86/gelu_avx2.o \
     src/tensor/kernels/softmax/x86/softmax_avx2.o \
     src/tensor/kernels/gemm/gemm_avx2.o \
-    src/tensor/kernels/gemm/x86/sgemm_ukernel_avx2.o
+    src/tensor/kernels/gemm/x86/sgemm_ukernel_avx2.o \
+    src/tensor/kernels/gemv/gemv_avx2.o
   CHECK_ASM := tests/checkasm/x86/checkasm.o
 %.o: %.asm
 	$(NASM) -f $(NASMFMT) -I src/ $< -o $@
@@ -116,7 +121,8 @@ CHECK_SRC := \
   tests/checkasm/checkasm_softmax.c \
   tests/checkasm/checkasm_rope.c \
   tests/checkasm/checkasm_exp.c \
-  tests/checkasm/checkasm_gemm.c
+  tests/checkasm/checkasm_gemm.c \
+  tests/checkasm/checkasm_gemv.c
 
 peregrine: src/cli/peregrine.c $(OBJ) $(ASM_OBJ)
 	$(CC) $(CFLAGS) $^ $(LDLIBS) -o $@

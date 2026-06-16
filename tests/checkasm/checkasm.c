@@ -34,6 +34,7 @@ static const struct {
     { "rope",    checkasm_check_rope },
     { "exp",     checkasm_check_exp },
     { "gemm",    checkasm_check_gemm },
+    { "gemv",    checkasm_check_gemv },
 };
 
 /* ---- global run state --------------------------------------------------- */
