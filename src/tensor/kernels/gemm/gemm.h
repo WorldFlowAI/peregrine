@@ -49,5 +49,26 @@ void pg_sgemm_neon(size_t M, size_t N, size_t K,
                    const float *B, size_t ldb,
                    float *C, size_t ldc);
 #endif
+#if PG_ARCH_X86_64
+void pg_sgemm_avx2(size_t M, size_t N, size_t K,
+                   const float *A, size_t lda,
+                   const float *B, size_t ldb,
+                   float *C, size_t ldc);
+#endif
+
+/*
+ * Internal: the shared packed + threaded driver. Each ISA's public entry
+ * (pg_sgemm_neon / pg_sgemm_avx2) calls this with its microkernel and tile
+ * dimensions (mr x nr). The microkernel computes an mr x nr block of C as
+ * C[mr x nr] = sum_{k<kc} a[k][0..mr) (x) b[k][0..nr), reading the pre-packed
+ * a/b panels contiguously and overwriting C (one call spans all of K).
+ */
+typedef void (*pg_sgemm_ukernel_fn)(size_t kc, const float *a, const float *b,
+                                    float *c, size_t ldc);
+void pg_sgemm_blocked(size_t M, size_t N, size_t K,
+                      const float *A, size_t lda,
+                      const float *B, size_t ldb,
+                      float *C, size_t ldc,
+                      size_t mr, size_t nr, pg_sgemm_ukernel_fn ukernel);
 
 #endif /* PEREGRINE_TENSOR_KERNELS_GEMM_H */
