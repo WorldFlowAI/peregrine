@@ -58,6 +58,8 @@ c_sources = files(
   'src/tensor/kernels/softmax/softmax_init.c',
   'src/tensor/kernels/rope/rope_ref.c',
   'src/tensor/kernels/rope/rope_init.c',
+  'src/tensor/kernels/exp/exp_ref.c',
+  'src/tensor/kernels/exp/exp_init.c',
 )
 
 asm_sources = []
@@ -70,6 +72,7 @@ if target_x86
     'src/tensor/kernels/max/x86/max_avx2.asm',
     'src/tensor/kernels/mul/x86/mul_avx2.asm',
     'src/tensor/kernels/add/x86/add_avx2.asm',
+    'src/tensor/kernels/exp/x86/exp_avx2.asm',
   )
 elif target_arm
   asm_sources += files(
@@ -80,6 +83,7 @@ elif target_arm
     'src/tensor/kernels/max/arm/max_neon.S',
     'src/tensor/kernels/mul/arm/mul_neon.S',
     'src/tensor/kernels/add/arm/add_neon.S',
+    'src/tensor/kernels/exp/arm/exp_neon.S',
   )
 endif
 
