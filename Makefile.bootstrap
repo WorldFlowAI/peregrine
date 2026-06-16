@@ -22,7 +22,15 @@ C_SRC := \
   src/tensor/kernels/axpy/axpy_ref.c \
   src/tensor/kernels/axpy/axpy_init.c \
   src/tensor/kernels/rmsnorm/rmsnorm_ref.c \
-  src/tensor/kernels/rmsnorm/rmsnorm_init.c
+  src/tensor/kernels/rmsnorm/rmsnorm_init.c \
+  src/tensor/kernels/sum/sum_ref.c \
+  src/tensor/kernels/sum/sum_init.c \
+  src/tensor/kernels/max/max_ref.c \
+  src/tensor/kernels/max/max_init.c \
+  src/tensor/kernels/mul/mul_ref.c \
+  src/tensor/kernels/mul/mul_init.c \
+  src/tensor/kernels/add/add_ref.c \
+  src/tensor/kernels/add/add_init.c
 
 OBJ := $(C_SRC:.c=.o)
 
@@ -33,7 +41,11 @@ ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
   ASM_OBJ := \
     src/tensor/kernels/dot/arm/dot_neon.o \
     src/tensor/kernels/axpy/arm/axpy_neon.o \
-    src/tensor/kernels/rmsnorm/arm/rmsnorm_neon.o
+    src/tensor/kernels/rmsnorm/arm/rmsnorm_neon.o \
+    src/tensor/kernels/sum/arm/sum_neon.o \
+    src/tensor/kernels/max/arm/max_neon.o \
+    src/tensor/kernels/mul/arm/mul_neon.o \
+    src/tensor/kernels/add/arm/add_neon.o
   CHECK_ASM := tests/checkasm/arm/checkasm.S
 %.o: %.S
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -49,7 +61,11 @@ ifeq ($(UNAME_M),x86_64)
   ASM_OBJ := \
     src/tensor/kernels/dot/x86/dot_avx2.o \
     src/tensor/kernels/axpy/x86/axpy_avx2.o \
-    src/tensor/kernels/rmsnorm/x86/rmsnorm_avx2.o
+    src/tensor/kernels/rmsnorm/x86/rmsnorm_avx2.o \
+    src/tensor/kernels/sum/x86/sum_avx2.o \
+    src/tensor/kernels/max/x86/max_avx2.o \
+    src/tensor/kernels/mul/x86/mul_avx2.o \
+    src/tensor/kernels/add/x86/add_avx2.o
   CHECK_ASM := tests/checkasm/x86/checkasm.o
 %.o: %.asm
 	$(NASM) -f $(NASMFMT) -I src/ $< -o $@
@@ -63,7 +79,11 @@ CHECK_SRC := \
   tests/checkasm/checkasm.c \
   tests/checkasm/checkasm_dot.c \
   tests/checkasm/checkasm_axpy.c \
-  tests/checkasm/checkasm_rmsnorm.c
+  tests/checkasm/checkasm_rmsnorm.c \
+  tests/checkasm/checkasm_sum.c \
+  tests/checkasm/checkasm_max.c \
+  tests/checkasm/checkasm_mul.c \
+  tests/checkasm/checkasm_add.c
 
 peregrine: src/cli/peregrine.c $(OBJ) $(ASM_OBJ)
 	$(CC) $(CFLAGS) $^ $(LDLIBS) -o $@
