@@ -25,6 +25,9 @@ add_project_arguments('-D_POSIX_C_SOURCE=200809L', language : 'c')
 # libm is separate on Linux/glibc (rmsnorm uses sqrtf); a no-op on macOS.
 m_dep = cc.find_library('m', required : false)
 
+# pthreads for the thread pool (util/thread); folded into libc on macOS.
+threads_dep = dependency('threads')
+
 # NASM is only needed on x86-64; on ARM the .S kernels go through the C
 # compiler's integrated assembler.
 if target_x86
@@ -35,6 +38,7 @@ incdir = include_directories('include', 'src')
 
 c_sources = files(
   'src/util/cpu.c',
+  'src/util/thread.c',
   'src/util/mem.c',
   'src/tensor/kernels/dot/dot_ref.c',
   'src/tensor/kernels/dot/dot_init.c',
@@ -101,13 +105,13 @@ endif
 libperegrine = static_library('peregrine',
   c_sources, asm_sources,
   include_directories : incdir,
-  dependencies : m_dep,
+  dependencies : [m_dep, threads_dep],
   install : true)
 
 peregrine_dep = declare_dependency(
   link_with : libperegrine,
   include_directories : incdir,
-  dependencies : m_dep)
+  dependencies : [m_dep, threads_dep])
 
 executable('peregrine',
   'src/cli/peregrine.c',
