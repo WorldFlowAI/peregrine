@@ -36,6 +36,7 @@ static const struct {
     { "gemm",    checkasm_check_gemm },
     { "gemv",    checkasm_check_gemv },
     { "gemm_bf16", checkasm_check_gemm_bf16 },
+    { "gemm_fp16", checkasm_check_gemm_fp16 },
 };
 
 /* ---- global run state --------------------------------------------------- */
