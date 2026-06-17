@@ -10,6 +10,7 @@
 
 #include <stddef.h>
 #include "peregrine/model.h"
+#include "peregrine/tokenizer.h"
 #include "peregrine/version.h"
 
 #ifdef __cplusplus

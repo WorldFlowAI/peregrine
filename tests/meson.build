@@ -37,4 +37,10 @@ model_file_test = executable('test_model_file',
 
 test('model_file', model_file_test)
 
+tokenizer_test = executable('test_tokenizer',
+  'test_tokenizer.c',
+  dependencies : peregrine_dep)
+
+test('tokenizer', tokenizer_test)
+
 # Benchmarks are opt-in (slow); run manually with: build/tests/checkasm --bench
