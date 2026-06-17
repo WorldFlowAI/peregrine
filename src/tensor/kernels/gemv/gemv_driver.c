@@ -10,7 +10,7 @@
 #include "util/thread.h"
 
 #define PG_GEMV_PAR_MIN_M 1024
-#define PG_GEMV_PAR_GRAIN 128
+#define PG_GEMV_PAR_GRAIN 256
 
 typedef struct {
     size_t        K, lda;

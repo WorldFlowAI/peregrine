@@ -14,6 +14,7 @@
 #include "tensor/kernels/silu/silu.h"
 #include "tensor/kernels/softmax/softmax.h"
 #include "util/cpu.h"
+#include "util/thread.h"
 
 #include <math.h>
 #include <stdarg.h>
@@ -21,6 +22,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#define PG_LLAMA_QKV_GRAIN 256
+#define PG_LLAMA_FFN_GATE_UP_GRAIN 128
 
 typedef struct PgMatF32 {
     const float *data;
@@ -76,6 +81,8 @@ struct PgLlamaContext {
     const PgLlamaModel *model;
     size_t context_length;
     size_t pos;
+    int profile_enabled;
+    PgLlamaProfile profile;
 
     float *key_cache;
     float *value_cache;
@@ -110,6 +117,33 @@ struct PgSampler {
     size_t capacity;
 };
 
+typedef struct PgGemvPairJob {
+    const PgLlamaModel *model;
+    const PgMatF32 *a;
+    const PgMatF32 *b;
+    const float *x;
+    float *ya;
+    float *yb;
+} PgGemvPairJob;
+
+typedef struct PgGemvTripleJob {
+    const PgLlamaModel *model;
+    const PgMatF32 *a;
+    const PgMatF32 *b;
+    const PgMatF32 *c;
+    const float *x;
+    float *ya;
+    float *yb;
+    float *yc;
+} PgGemvTripleJob;
+
+typedef struct PgGemvAddJob {
+    const PgLlamaModel *model;
+    const PgMatF32 *a;
+    const float *x;
+    float *y;
+} PgGemvAddJob;
+
 static void set_err(char *err, size_t err_len, const char *fmt, ...)
 {
     va_list ap;
@@ -120,6 +154,20 @@ static void set_err(char *err, size_t err_len, const char *fmt, ...)
     vsnprintf(err, err_len, fmt, ap);
     va_end(ap);
 }
+
+static double profile_now(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1.0e-9;
+}
+
+#define PROFILE_BEGIN(ctx) ((ctx)->profile_enabled ? profile_now() : 0.0)
+#define PROFILE_ADD(ctx, field, start) do { \
+    if ((ctx)->profile_enabled) \
+        (ctx)->profile.field += profile_now() - (start); \
+} while (0)
 
 static bool checked_mul_size(size_t a, size_t b, size_t *out)
 {
@@ -569,11 +617,123 @@ void pg_llama_context_free(PgLlamaContext *ctx)
     free(ctx);
 }
 
+void pg_llama_context_profile_enable(PgLlamaContext *ctx, int enabled)
+{
+    if (ctx)
+        ctx->profile_enabled = enabled != 0;
+}
+
+void pg_llama_context_profile_reset(PgLlamaContext *ctx)
+{
+    if (ctx)
+        memset(&ctx->profile, 0, sizeof(ctx->profile));
+}
+
+const PgLlamaProfile *pg_llama_context_profile(const PgLlamaContext *ctx)
+{
+    return ctx ? &ctx->profile : NULL;
+}
+
 static float *cache_ptr(float *base, const PgLlamaContext *ctx,
                         size_t layer, size_t pos)
 {
     const PgLlamaModel *m = ctx->model;
     return base + (layer * ctx->context_length + pos) * m->kv_dim;
+}
+
+static void gemv_pair_task(void *vctx, size_t begin, size_t end)
+{
+    PgGemvPairJob *job = vctx;
+    const PgLlamaModel *m = job->model;
+    size_t a_rows = job->a->rows;
+    size_t a_end = end < a_rows ? end : a_rows;
+
+    for (size_t r = begin; r < a_end; r++)
+        job->ya[r] = m->dot.dot_f32(job->a->data + r * job->a->cols,
+                                    job->x, job->a->cols);
+    if (end > a_rows) {
+        size_t b_begin = begin > a_rows ? begin - a_rows : 0;
+        size_t b_end = end - a_rows;
+
+        for (size_t r = b_begin; r < b_end; r++)
+            job->yb[r] = m->dot.dot_f32(job->b->data + r * job->b->cols,
+                                        job->x, job->b->cols);
+    }
+}
+
+static void gemv_triple_task(void *vctx, size_t begin, size_t end)
+{
+    PgGemvTripleJob *job = vctx;
+    const PgLlamaModel *m = job->model;
+    size_t a_rows = job->a->rows;
+    size_t ab_rows = a_rows + job->b->rows;
+    size_t a_end = end < a_rows ? end : a_rows;
+
+    for (size_t r = begin; r < a_end; r++)
+        job->ya[r] = m->dot.dot_f32(job->a->data + r * job->a->cols,
+                                    job->x, job->a->cols);
+    if (end > a_rows) {
+        size_t b_begin = begin > a_rows ? begin - a_rows : 0;
+        size_t b_end = end < ab_rows ? end - a_rows : job->b->rows;
+
+        for (size_t r = b_begin; r < b_end; r++)
+            job->yb[r] = m->dot.dot_f32(job->b->data + r * job->b->cols,
+                                        job->x, job->b->cols);
+    }
+    if (end > ab_rows) {
+        size_t c_begin = begin > ab_rows ? begin - ab_rows : 0;
+        size_t c_end = end - ab_rows;
+
+        for (size_t r = c_begin; r < c_end; r++)
+            job->yc[r] = m->dot.dot_f32(job->c->data + r * job->c->cols,
+                                        job->x, job->c->cols);
+    }
+}
+
+static void gemv_add_task(void *vctx, size_t begin, size_t end)
+{
+    PgGemvAddJob *job = vctx;
+    const PgLlamaModel *m = job->model;
+
+    for (size_t r = begin; r < end; r++)
+        job->y[r] += m->dot.dot_f32(job->a->data + r * job->a->cols,
+                                    job->x, job->a->cols);
+}
+
+static void llama_gemv_pair(PgLlamaContext *ctx, const PgMatF32 *a,
+                            const PgMatF32 *b, const float *x,
+                            float *ya, float *yb)
+{
+    PgGemvPairJob job = { ctx->model, a, b, x, ya, yb };
+
+    pg_parallel_for(pg_global_threadpool(), a->rows + b->rows,
+                    PG_LLAMA_FFN_GATE_UP_GRAIN,
+                    gemv_pair_task, &job);
+}
+
+static void llama_gemv_triple(PgLlamaContext *ctx, const PgMatF32 *a,
+                              const PgMatF32 *b, const PgMatF32 *c,
+                              const float *x, float *ya, float *yb, float *yc)
+{
+    PgGemvTripleJob job = { ctx->model, a, b, c, x, ya, yb, yc };
+
+    pg_parallel_for(pg_global_threadpool(), a->rows + b->rows + c->rows,
+                    PG_LLAMA_QKV_GRAIN,
+                    gemv_triple_task, &job);
+}
+
+static void llama_gemv_add(const PgLlamaModel *m, const PgMatF32 *a,
+                           const float *x, float *y)
+{
+    if (a->cols >= 1024) {
+        PgGemvAddJob job = { m, a, x, y };
+
+        pg_parallel_for(pg_global_threadpool(), a->rows, 64,
+                        gemv_add_task, &job);
+        return;
+    }
+    for (size_t r = 0; r < a->rows; r++)
+        y[r] += m->dot.dot_f32(a->data + r * a->cols, x, a->cols);
 }
 
 static int eval_layer(PgLlamaContext *ctx, size_t layer_idx)
@@ -585,16 +745,19 @@ static int eval_layer(PgLlamaContext *ctx, size_t layer_idx)
     float scale = 1.0f / sqrtf((float)m->head_dim);
     size_t group = m->n_head / m->n_head_kv;
     size_t h;
+    double t0;
 
+    t0 = PROFILE_BEGIN(ctx);
     m->rmsnorm.rmsnorm_f32(ctx->norm, ctx->x, l->attn_norm,
                            m->n_embd, m->norm_eps);
-    m->gemv.sgemv(l->q.rows, l->q.cols, l->q.data, l->q.cols,
-                  ctx->norm, ctx->q);
-    m->gemv.sgemv(l->k.rows, l->k.cols, l->k.data, l->k.cols,
-                  ctx->norm, ctx->k);
-    m->gemv.sgemv(l->v.rows, l->v.cols, l->v.data, l->v.cols,
-                  ctx->norm, ctx->v);
+    PROFILE_ADD(ctx, attn_norm_sec, t0);
 
+    t0 = PROFILE_BEGIN(ctx);
+    llama_gemv_triple(ctx, &l->q, &l->k, &l->v,
+                      ctx->norm, ctx->q, ctx->k, ctx->v);
+    PROFILE_ADD(ctx, qkv_sec, t0);
+
+    t0 = PROFILE_BEGIN(ctx);
     m->rope.apply(ctx->q, ctx->q, ctx->cos, ctx->sin, 1,
                   m->n_head, m->head_dim, PG_ROPE_INTERLEAVED);
     m->rope.apply(ctx->k, ctx->k, ctx->cos, ctx->sin, 1,
@@ -604,6 +767,7 @@ static int eval_layer(PgLlamaContext *ctx, size_t layer_idx)
     v_slot = cache_ptr(ctx->value_cache, ctx, layer_idx, ctx->pos);
     memcpy(k_slot, ctx->k, m->kv_dim * sizeof(float));
     memcpy(v_slot, ctx->v, m->kv_dim * sizeof(float));
+    PROFILE_ADD(ctx, rope_sec, t0);
 
     memset(ctx->attn, 0, m->n_embd * sizeof(float));
     for (h = 0; h < m->n_head; h++) {
@@ -612,36 +776,55 @@ static int eval_layer(PgLlamaContext *ctx, size_t layer_idx)
         float *out_h = ctx->attn + h * m->head_dim;
         size_t t;
 
+        t0 = PROFILE_BEGIN(ctx);
         for (t = 0; t <= ctx->pos; t++) {
             const float *kh = cache_ptr(ctx->key_cache, ctx, layer_idx, t) +
                               kv_h * m->head_dim;
             ctx->scores[t] = m->dot.dot_f32(qh, kh, m->head_dim) * scale;
         }
+        PROFILE_ADD(ctx, attn_scores_sec, t0);
+
+        t0 = PROFILE_BEGIN(ctx);
         m->softmax.softmax_f32(ctx->scores, ctx->probs, ctx->pos + 1);
+        PROFILE_ADD(ctx, attn_softmax_sec, t0);
+
+        t0 = PROFILE_BEGIN(ctx);
         for (t = 0; t <= ctx->pos; t++) {
             const float *vh = cache_ptr(ctx->value_cache, ctx, layer_idx, t) +
                               kv_h * m->head_dim;
             m->axpy.axpy_f32(ctx->probs[t], vh, out_h, m->head_dim);
         }
+        PROFILE_ADD(ctx, attn_mix_sec, t0);
     }
 
+    t0 = PROFILE_BEGIN(ctx);
     m->gemv.sgemv(l->o.rows, l->o.cols, l->o.data, l->o.cols,
                   ctx->attn, ctx->proj);
+    PROFILE_ADD(ctx, attn_output_sec, t0);
+
+    t0 = PROFILE_BEGIN(ctx);
     m->add.add_f32(ctx->x, ctx->proj, ctx->norm, m->n_embd);
     memcpy(ctx->x, ctx->norm, m->n_embd * sizeof(float));
+    PROFILE_ADD(ctx, attn_residual_sec, t0);
 
+    t0 = PROFILE_BEGIN(ctx);
     m->rmsnorm.rmsnorm_f32(ctx->norm, ctx->x, l->ffn_norm,
                            m->n_embd, m->norm_eps);
-    m->gemv.sgemv(l->gate.rows, l->gate.cols, l->gate.data, l->gate.cols,
-                  ctx->norm, ctx->ff_gate);
-    m->gemv.sgemv(l->up.rows, l->up.cols, l->up.data, l->up.cols,
-                  ctx->norm, ctx->ff_up);
+    PROFILE_ADD(ctx, ffn_norm_sec, t0);
+
+    t0 = PROFILE_BEGIN(ctx);
+    llama_gemv_pair(ctx, &l->gate, &l->up,
+                    ctx->norm, ctx->ff_gate, ctx->ff_up);
+    PROFILE_ADD(ctx, ffn_gate_up_sec, t0);
+
+    t0 = PROFILE_BEGIN(ctx);
     m->silu.silu_f32(ctx->ff_gate, ctx->ff_hidden, m->n_ff);
     m->mul.mul_f32(ctx->ff_hidden, ctx->ff_up, ctx->ff_gate, m->n_ff);
-    m->gemv.sgemv(l->down.rows, l->down.cols, l->down.data, l->down.cols,
-                  ctx->ff_gate, ctx->proj);
-    m->add.add_f32(ctx->x, ctx->proj, ctx->norm, m->n_embd);
-    memcpy(ctx->x, ctx->norm, m->n_embd * sizeof(float));
+    PROFILE_ADD(ctx, ffn_act_sec, t0);
+
+    t0 = PROFILE_BEGIN(ctx);
+    llama_gemv_add(m, &l->down, ctx->ff_gate, ctx->x);
+    PROFILE_ADD(ctx, ffn_down_sec, t0);
     return 0;
 }
 
@@ -673,11 +856,21 @@ int pg_llama_eval_token(PgLlamaContext *ctx, int32_t token,
         return -1;
     }
 
-    memcpy(ctx->x, m->token_embd + (size_t)token * m->n_embd,
-           m->n_embd * sizeof(float));
-    pos_i32 = (int32_t)ctx->pos;
-    m->rope.cache(ctx->cos, ctx->sin, &pos_i32, 1,
-                  m->head_dim, m->rope_theta);
+    {
+        double t0 = PROFILE_BEGIN(ctx);
+
+        memcpy(ctx->x, m->token_embd + (size_t)token * m->n_embd,
+               m->n_embd * sizeof(float));
+        PROFILE_ADD(ctx, token_embed_sec, t0);
+    }
+    {
+        double t0 = PROFILE_BEGIN(ctx);
+
+        pos_i32 = (int32_t)ctx->pos;
+        m->rope.cache(ctx->cos, ctx->sin, &pos_i32, 1,
+                      m->head_dim, m->rope_theta);
+        PROFILE_ADD(ctx, rope_sec, t0);
+    }
 
     for (i = 0; i < m->n_layer; i++) {
         if (eval_layer(ctx, i) != 0) {
@@ -686,12 +879,24 @@ int pg_llama_eval_token(PgLlamaContext *ctx, int32_t token,
         }
     }
 
-    m->rmsnorm.rmsnorm_f32(ctx->norm, ctx->x, m->output_norm,
-                           m->n_embd, m->norm_eps);
-    m->gemv.sgemv(m->output.rows, m->output.cols, m->output.data,
-                  m->output.cols, ctx->norm, ctx->logits);
+    {
+        double t0 = PROFILE_BEGIN(ctx);
+
+        m->rmsnorm.rmsnorm_f32(ctx->norm, ctx->x, m->output_norm,
+                               m->n_embd, m->norm_eps);
+        PROFILE_ADD(ctx, output_norm_sec, t0);
+    }
+    {
+        double t0 = PROFILE_BEGIN(ctx);
+
+        m->gemv.sgemv(m->output.rows, m->output.cols, m->output.data,
+                      m->output.cols, ctx->norm, ctx->logits);
+        PROFILE_ADD(ctx, logits_sec, t0);
+    }
 
     ctx->pos++;
+    if (ctx->profile_enabled)
+        ctx->profile.tokens++;
     if (logits)
         *logits = ctx->logits;
     return 0;
@@ -733,9 +938,12 @@ int32_t pg_llama_sample_greedy(const float *logits, size_t n_logits)
         return -1;
     for (i = 0; i < n_logits; i++) {
         float v = logits[i];
-        if (!isfinite(v))
-            continue;
-        if (best < 0 || v > best_v) {
+        if (best < 0) {
+            if (v != v)
+                continue;
+            best = (int32_t)i;
+            best_v = v;
+        } else if (v > best_v) {
             best = (int32_t)i;
             best_v = v;
         }

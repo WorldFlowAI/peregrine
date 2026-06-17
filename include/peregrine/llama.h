@@ -24,6 +24,26 @@ typedef struct PgSamplerParams {
     uint64_t seed;
 } PgSamplerParams;
 
+typedef struct PgLlamaProfile {
+    size_t tokens;
+    double token_embed_sec;
+    double rope_sec;
+    double attn_norm_sec;
+    double qkv_sec;
+    double attn_scores_sec;
+    double attn_softmax_sec;
+    double attn_mix_sec;
+    double attn_output_sec;
+    double attn_residual_sec;
+    double ffn_norm_sec;
+    double ffn_gate_up_sec;
+    double ffn_act_sec;
+    double ffn_down_sec;
+    double ffn_residual_sec;
+    double output_norm_sec;
+    double logits_sec;
+} PgLlamaProfile;
+
 PgLlamaModel *pg_llama_model_load(const char *path, char *err, size_t err_len);
 void pg_llama_model_free(PgLlamaModel *model);
 
@@ -37,6 +57,9 @@ PgLlamaContext *pg_llama_context_new(const PgLlamaModel *model,
                                      size_t context_length,
                                      char *err, size_t err_len);
 void pg_llama_context_free(PgLlamaContext *ctx);
+void pg_llama_context_profile_enable(PgLlamaContext *ctx, int enabled);
+void pg_llama_context_profile_reset(PgLlamaContext *ctx);
+const PgLlamaProfile *pg_llama_context_profile(const PgLlamaContext *ctx);
 
 int pg_llama_eval_token(PgLlamaContext *ctx, int32_t token,
                         const float **logits,

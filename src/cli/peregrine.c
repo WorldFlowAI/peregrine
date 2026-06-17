@@ -382,7 +382,8 @@ static int eval_prompt_tokens(PgLlamaContext *ctx, const PgTokenBuffer *tokens,
 
 static int eval_decode_tokens(PgLlamaContext *ctx, const PgLlamaModel *model,
                               size_t n_predict, int32_t fixed_token,
-                              const float **logits, char *err, size_t err_len)
+                              const float **logits, double *sample_sec,
+                              char *err, size_t err_len)
 {
     size_t i;
 
@@ -390,8 +391,12 @@ static int eval_decode_tokens(PgLlamaContext *ctx, const PgLlamaModel *model,
         int32_t next = fixed_token;
 
         if (next < 0) {
+            double t0 = sample_sec ? now_sec() : 0.0;
+
             next = pg_llama_sample_greedy(*logits,
                                           pg_llama_model_vocab_size(model));
+            if (sample_sec)
+                *sample_sec += now_sec() - t0;
             if (next < 0) {
                 snprintf(err, err_len, "failed to sample next token");
                 return -1;
@@ -403,6 +408,73 @@ static int eval_decode_tokens(PgLlamaContext *ctx, const PgLlamaModel *model,
     return 0;
 }
 
+static void profile_add(PgLlamaProfile *dst, const PgLlamaProfile *src)
+{
+    dst->tokens += src->tokens;
+    dst->token_embed_sec += src->token_embed_sec;
+    dst->rope_sec += src->rope_sec;
+    dst->attn_norm_sec += src->attn_norm_sec;
+    dst->qkv_sec += src->qkv_sec;
+    dst->attn_scores_sec += src->attn_scores_sec;
+    dst->attn_softmax_sec += src->attn_softmax_sec;
+    dst->attn_mix_sec += src->attn_mix_sec;
+    dst->attn_output_sec += src->attn_output_sec;
+    dst->attn_residual_sec += src->attn_residual_sec;
+    dst->ffn_norm_sec += src->ffn_norm_sec;
+    dst->ffn_gate_up_sec += src->ffn_gate_up_sec;
+    dst->ffn_act_sec += src->ffn_act_sec;
+    dst->ffn_down_sec += src->ffn_down_sec;
+    dst->ffn_residual_sec += src->ffn_residual_sec;
+    dst->output_norm_sec += src->output_norm_sec;
+    dst->logits_sec += src->logits_sec;
+}
+
+static void print_profile_row(const char *name, double sec,
+                              double total_sec, size_t tokens)
+{
+    double pct = total_sec > 0.0 ? 100.0 * sec / total_sec : 0.0;
+    double us = tokens ? 1.0e6 * sec / (double)tokens : 0.0;
+
+    printf("profile.%s_sec: %.6f\n", name, sec);
+    printf("profile.%s_us_per_tok: %.2f\n", name, us);
+    printf("profile.%s_pct: %.2f\n", name, pct);
+}
+
+static double profile_total_sec(const PgLlamaProfile *p, double sample_sec)
+{
+    return p->token_embed_sec + p->rope_sec + p->attn_norm_sec + p->qkv_sec +
+           p->attn_scores_sec + p->attn_softmax_sec + p->attn_mix_sec +
+           p->attn_output_sec + p->attn_residual_sec + p->ffn_norm_sec +
+           p->ffn_gate_up_sec + p->ffn_act_sec + p->ffn_down_sec +
+           p->ffn_residual_sec + p->output_norm_sec + p->logits_sec +
+           sample_sec;
+}
+
+static void print_profile(const PgLlamaProfile *p, double sample_sec)
+{
+    double total = profile_total_sec(p, sample_sec);
+
+    printf("profile.tokens: %zu\n", p->tokens);
+    printf("profile.total_sec: %.6f\n", total);
+    print_profile_row("token_embed", p->token_embed_sec, total, p->tokens);
+    print_profile_row("rope", p->rope_sec, total, p->tokens);
+    print_profile_row("attn_norm", p->attn_norm_sec, total, p->tokens);
+    print_profile_row("qkv", p->qkv_sec, total, p->tokens);
+    print_profile_row("attn_scores", p->attn_scores_sec, total, p->tokens);
+    print_profile_row("attn_softmax", p->attn_softmax_sec, total, p->tokens);
+    print_profile_row("attn_mix", p->attn_mix_sec, total, p->tokens);
+    print_profile_row("attn_output", p->attn_output_sec, total, p->tokens);
+    print_profile_row("attn_residual", p->attn_residual_sec, total, p->tokens);
+    print_profile_row("ffn_norm", p->ffn_norm_sec, total, p->tokens);
+    print_profile_row("ffn_gate_up", p->ffn_gate_up_sec, total, p->tokens);
+    print_profile_row("ffn_act", p->ffn_act_sec, total, p->tokens);
+    print_profile_row("ffn_down", p->ffn_down_sec, total, p->tokens);
+    print_profile_row("ffn_residual", p->ffn_residual_sec, total, p->tokens);
+    print_profile_row("output_norm", p->output_norm_sec, total, p->tokens);
+    print_profile_row("logits", p->logits_sec, total, p->tokens);
+    print_profile_row("sample", sample_sec, total, p->tokens);
+}
+
 static int cmd_bench(int argc, char **argv)
 {
     const char *path = NULL;
@@ -412,6 +484,7 @@ static int cmd_bench(int argc, char **argv)
     size_t threads = 0;
     int32_t fixed_token = -1;
     int warmup = 1;
+    int profile = 0;
     PgLlamaModel *model = NULL;
     PgLlamaContext *ctx = NULL;
     const PgTokenizer *tok;
@@ -422,7 +495,9 @@ static int cmd_bench(int argc, char **argv)
     double tokenize_sec;
     double prompt_total = 0.0;
     double decode_total = 0.0;
+    double sample_total = 0.0;
     double t0;
+    PgLlamaProfile profile_total = { 0 };
     size_t i;
     int rc = 1;
 
@@ -457,16 +532,18 @@ static int cmd_bench(int argc, char **argv)
             fixed_token = (int32_t)token;
         } else if (!strcmp(argv[i], "--no-warmup")) {
             warmup = 0;
+        } else if (!strcmp(argv[i], "--profile")) {
+            profile = 1;
         } else {
             fprintf(stderr,
-                    "usage: %s bench -m <model.gguf> -p <prompt> [-n tokens] [-r repeat] [--threads n] [--fixed-token id] [--no-warmup]\n",
+                    "usage: %s bench -m <model.gguf> -p <prompt> [-n tokens] [-r repeat] [--threads n] [--fixed-token id] [--profile] [--no-warmup]\n",
                     argv[0]);
             return 2;
         }
     }
     if (!path || !prompt) {
         fprintf(stderr,
-                "usage: %s bench -m <model.gguf> -p <prompt> [-n tokens] [-r repeat] [--threads n] [--fixed-token id] [--no-warmup]\n",
+                "usage: %s bench -m <model.gguf> -p <prompt> [-n tokens] [-r repeat] [--threads n] [--fixed-token id] [--profile] [--no-warmup]\n",
                 argv[0]);
         return 2;
     }
@@ -509,7 +586,7 @@ static int cmd_bench(int argc, char **argv)
         }
         if (eval_prompt_tokens(ctx, &prompt_tokens, &logits, err, sizeof(err)) != 0 ||
             eval_decode_tokens(ctx, model, n_predict, fixed_token,
-                               &logits, err, sizeof(err)) != 0) {
+                               &logits, NULL, err, sizeof(err)) != 0) {
             fprintf(stderr, "peregrine: %s\n", err);
             goto done;
         }
@@ -534,13 +611,24 @@ static int cmd_bench(int argc, char **argv)
         }
         prompt_sec = now_sec() - t0;
 
+        if (profile) {
+            pg_llama_context_profile_enable(ctx, 1);
+            pg_llama_context_profile_reset(ctx);
+        }
         t0 = now_sec();
         if (eval_decode_tokens(ctx, model, n_predict, fixed_token,
-                               &logits, err, sizeof(err)) != 0) {
+                               &logits, profile ? &sample_total : NULL,
+                               err, sizeof(err)) != 0) {
             fprintf(stderr, "peregrine: %s\n", err);
             goto done;
         }
         decode_sec = now_sec() - t0;
+        if (profile) {
+            const PgLlamaProfile *p = pg_llama_context_profile(ctx);
+
+            if (p)
+                profile_add(&profile_total, p);
+        }
 
         prompt_total += prompt_sec;
         decode_total += decode_sec;
@@ -569,6 +657,8 @@ static int cmd_bench(int argc, char **argv)
         printf("prompt_eval_tok_s: %.2f\n", prompt_tps);
         printf("decode_sec_avg: %.6f\n", decode_avg);
         printf("decode_tok_s: %.2f\n", decode_tps);
+        if (profile)
+            print_profile(&profile_total, sample_total);
     }
     rc = 0;
 
