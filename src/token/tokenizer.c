@@ -326,104 +326,264 @@ static int normalize_llama_text(const char *text, char **out, size_t *out_len)
     return 0;
 }
 
+typedef struct SpmSymbol {
+    size_t off;
+    size_t len;
+    int prev;
+    int next;
+} SpmSymbol;
+
+typedef struct SpmBigram {
+    int left;
+    int right;
+    double score;
+    size_t size;
+} SpmBigram;
+
+typedef struct SpmHeap {
+    SpmBigram *data;
+    size_t count;
+    size_t capacity;
+} SpmHeap;
+
+static size_t utf8_char_len(const char *s, size_t remaining)
+{
+    unsigned char c;
+    size_t n = 1;
+
+    if (remaining == 0)
+        return 0;
+    c = (unsigned char)s[0];
+    if ((c & 0x80) == 0x00)
+        n = 1;
+    else if ((c & 0xe0) == 0xc0)
+        n = 2;
+    else if ((c & 0xf0) == 0xe0)
+        n = 3;
+    else if ((c & 0xf8) == 0xf0)
+        n = 4;
+    return n <= remaining ? n : 1;
+}
+
+static int spm_bigram_better(const SpmBigram *a, const SpmBigram *b)
+{
+    if (a->score > b->score)
+        return 1;
+    if (a->score < b->score)
+        return 0;
+    return a->left < b->left;
+}
+
+static int spm_heap_push(SpmHeap *heap, SpmBigram bigram)
+{
+    size_t i;
+
+    if (heap->count == heap->capacity) {
+        size_t cap = heap->capacity ? heap->capacity * 2 : 32;
+        SpmBigram *next;
+
+        if (cap < heap->capacity)
+            return -1;
+        if (cap > SIZE_MAX / sizeof(*next))
+            return -1;
+        next = realloc(heap->data, cap * sizeof(*next));
+        if (!next)
+            return -1;
+        heap->data = next;
+        heap->capacity = cap;
+    }
+
+    i = heap->count++;
+    while (i > 0) {
+        size_t parent = (i - 1) >> 1;
+
+        if (!spm_bigram_better(&bigram, &heap->data[parent]))
+            break;
+        heap->data[i] = heap->data[parent];
+        i = parent;
+    }
+    heap->data[i] = bigram;
+    return 0;
+}
+
+static int spm_heap_pop(SpmHeap *heap, SpmBigram *out)
+{
+    SpmBigram tail;
+    size_t i = 0;
+
+    if (heap->count == 0)
+        return 0;
+    *out = heap->data[0];
+    tail = heap->data[--heap->count];
+    while (1) {
+        size_t left = i * 2 + 1;
+        size_t right = left + 1;
+        size_t best = left;
+
+        if (left >= heap->count)
+            break;
+        if (right < heap->count &&
+            spm_bigram_better(&heap->data[right], &heap->data[left]))
+            best = right;
+        if (!spm_bigram_better(&heap->data[best], &tail))
+            break;
+        heap->data[i] = heap->data[best];
+        i = best;
+    }
+    if (heap->count > 0)
+        heap->data[i] = tail;
+    return 1;
+}
+
+static int spm_try_add_bigram(const PgTokenizer *tok, const char *norm,
+                              const SpmSymbol *symbols, int left, int right,
+                              SpmHeap *heap)
+{
+    SpmBigram bigram;
+    int id;
+
+    if (left < 0 || right < 0)
+        return 0;
+    if (symbols[left].len == 0 || symbols[right].len == 0)
+        return 0;
+
+    bigram.left = left;
+    bigram.right = right;
+    bigram.size = symbols[left].len + symbols[right].len;
+    id = tokenizer_find(tok, norm + symbols[left].off, bigram.size);
+    if (id < 0)
+        return 0;
+    bigram.score = tok->vocab[id].score;
+    return spm_heap_push(heap, bigram);
+}
+
+static int spm_build_symbols(const char *norm, size_t n,
+                             SpmSymbol **out_symbols, size_t *out_count)
+{
+    SpmSymbol *symbols;
+    size_t count = 0;
+    size_t pos = 0;
+
+    symbols = malloc((n ? n : 1) * sizeof(*symbols));
+    if (!symbols)
+        return -1;
+    while (pos < n) {
+        size_t len = utf8_char_len(norm + pos, n - pos);
+
+        symbols[count].off = pos;
+        symbols[count].len = len;
+        symbols[count].prev = count ? (int)count - 1 : -1;
+        symbols[count].next = -1;
+        if (count > 0)
+            symbols[count - 1].next = (int)count;
+        count++;
+        pos += len;
+    }
+    *out_symbols = symbols;
+    *out_count = count;
+    return 0;
+}
+
+static int spm_emit_symbol(const PgTokenizer *tok, const char *norm,
+                           const SpmSymbol *symbol, PgTokenBuffer *out)
+{
+    int id = tokenizer_find(tok, norm + symbol->off, symbol->len);
+    size_t i;
+
+    if (id >= 0)
+        return token_buffer_push(out, id);
+    for (i = 0; i < symbol->len; i++) {
+        int32_t byte_id = tok->byte_id[(unsigned char)norm[symbol->off + i]];
+
+        if (token_buffer_push(out, byte_id) != 0)
+            return -1;
+    }
+    return 0;
+}
+
 int pg_tokenizer_encode(const PgTokenizer *tok, const char *text,
                         int add_bos, int add_eos, PgTokenBuffer *out)
 {
     char *norm = NULL;
-    double *best = NULL;
-    int32_t *prev = NULL;
-    size_t *prev_len = NULL;
+    SpmSymbol *symbols = NULL;
+    SpmHeap heap = { 0 };
     size_t n;
+    size_t n_symbols = 0;
     size_t i;
-    const double neg_inf = -1.0e300;
 
     if (!tok || !text || !out)
         return -1;
     if (normalize_llama_text(text, &norm, &n) != 0)
         return -1;
-    best = malloc((n + 1) * sizeof(*best));
-    prev = malloc((n + 1) * sizeof(*prev));
-    prev_len = malloc((n + 1) * sizeof(*prev_len));
-    if (!best || !prev || !prev_len)
+    if (spm_build_symbols(norm, n, &symbols, &n_symbols) != 0)
         goto fail;
 
-    for (i = 0; i <= n; i++) {
-        best[i] = neg_inf;
-        prev[i] = -1;
-        prev_len[i] = 0;
+    for (i = 1; i < n_symbols; i++) {
+        if (spm_try_add_bigram(tok, norm, symbols, (int)i - 1, (int)i,
+                               &heap) != 0)
+            goto fail;
     }
-    best[0] = 0.0;
+    {
+        SpmBigram bigram;
 
-    for (i = 0; i < n; i++) {
-        size_t len;
-        int32_t byte_id;
+        while (spm_heap_pop(&heap, &bigram)) {
+            SpmSymbol *left;
+            SpmSymbol *right;
+            int next;
 
-        if (best[i] <= neg_inf / 2)
-            continue;
-        byte_id = tok->byte_id[(unsigned char)norm[i]];
-        if (best[i] - 100.0 > best[i + 1]) {
-            best[i + 1] = best[i] - 100.0;
-            prev[i + 1] = byte_id;
-            prev_len[i + 1] = 1;
-        }
-        for (len = 1; len <= tok->max_token_len && i + len <= n; len++) {
-            int id = tokenizer_find(tok, norm + i, len);
-            double score;
-
-            if (id < 0)
+            if (symbols[bigram.left].len == 0 ||
+                symbols[bigram.right].len == 0 ||
+                symbols[bigram.left].next != bigram.right ||
+                symbols[bigram.right].prev != bigram.left ||
+                symbols[bigram.left].len + symbols[bigram.right].len != bigram.size)
                 continue;
-            score = best[i] + tok->vocab[id].score;
-            if (score > best[i + len]) {
-                best[i + len] = score;
-                prev[i + len] = id;
-                prev_len[i + len] = len;
-            }
+
+            left = &symbols[bigram.left];
+            right = &symbols[bigram.right];
+            next = right->next;
+            left->len += right->len;
+            left->next = next;
+            right->len = 0;
+            if (next >= 0)
+                symbols[next].prev = bigram.left;
+
+            if (spm_try_add_bigram(tok, norm, symbols, left->prev,
+                                   bigram.left, &heap) != 0 ||
+                spm_try_add_bigram(tok, norm, symbols, bigram.left,
+                                   left->next, &heap) != 0)
+                goto fail;
         }
     }
 
-    if (prev[n] < 0)
-        goto fail;
     if (add_bos && token_buffer_push(out, tok->bos_id) != 0)
         goto fail;
+    for (i = 0; i < n_symbols; i++) {
+        if (symbols[i].prev < 0 && symbols[i].len > 0) {
+            int cursor = (int)i;
 
-    {
-        size_t count = 0;
-        size_t pos = n;
-        int32_t *tmp;
-
-        while (pos > 0) {
-            count++;
-            pos -= prev_len[pos];
-        }
-        tmp = malloc(count ? count * sizeof(*tmp) : sizeof(*tmp));
-        if (!tmp)
-            goto fail;
-        pos = n;
-        for (i = count; i > 0; i--) {
-            tmp[i - 1] = prev[pos];
-            pos -= prev_len[pos];
-        }
-        for (i = 0; i < count; i++) {
-            if (token_buffer_push(out, tmp[i]) != 0) {
-                free(tmp);
-                goto fail;
+            while (cursor >= 0) {
+                if (spm_emit_symbol(tok, norm, &symbols[cursor], out) != 0)
+                    goto fail;
+                cursor = symbols[cursor].next;
             }
+            break;
         }
-        free(tmp);
+    }
+    if (n_symbols == 0 && tok->unk_id >= 0) {
+        if (token_buffer_push(out, tok->unk_id) != 0)
+            goto fail;
     }
     if (add_eos && token_buffer_push(out, tok->eos_id) != 0)
         goto fail;
 
-    free(prev_len);
-    free(prev);
-    free(best);
+    free(heap.data);
+    free(symbols);
     free(norm);
     return 0;
 
 fail:
-    free(prev_len);
-    free(prev);
-    free(best);
+    free(heap.data);
+    free(symbols);
     free(norm);
     return -1;
 }

@@ -49,4 +49,11 @@ llama_test = executable('test_llama',
 
 test('llama', llama_test)
 
+python3 = find_program('python3', required : false)
+if python3.found()
+  test('llama_cpp_parity', python3,
+    args : [files('test_llama_cpp_parity.py'), peregrine_exe],
+    timeout : 120)
+endif
+
 # Benchmarks are opt-in (slow); run manually with: build/tests/checkasm --bench

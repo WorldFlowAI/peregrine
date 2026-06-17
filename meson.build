@@ -140,7 +140,7 @@ peregrine_dep = declare_dependency(
   include_directories : incdir,
   dependencies : [m_dep, threads_dep])
 
-executable('peregrine',
+peregrine_exe = executable('peregrine',
   'src/cli/peregrine.c',
   dependencies : peregrine_dep,
   install : true)

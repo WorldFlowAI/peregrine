@@ -88,11 +88,283 @@ static int parse_size_arg(const char *s, size_t *out)
     return 0;
 }
 
+static int parse_u64_arg(const char *s, uint64_t *out)
+{
+    char *end = NULL;
+    unsigned long long v;
+
+    if (!s || !*s)
+        return -1;
+    v = strtoull(s, &end, 0);
+    if (!end || *end != '\0')
+        return -1;
+    *out = (uint64_t)v;
+    return 0;
+}
+
+static int parse_float_arg(const char *s, float *out)
+{
+    char *end = NULL;
+    double v;
+
+    if (!s || !*s)
+        return -1;
+    v = strtod(s, &end);
+    if (!end || *end != '\0')
+        return -1;
+    *out = (float)v;
+    return 0;
+}
+
+static void print_escaped(const char *s, size_t n)
+{
+    size_t i;
+
+    putchar('"');
+    for (i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+
+        if (c == '\\' || c == '"') {
+            putchar('\\');
+            putchar(c);
+        } else if (c == '\n') {
+            fputs("\\n", stdout);
+        } else if (c == '\r') {
+            fputs("\\r", stdout);
+        } else if (c == '\t') {
+            fputs("\\t", stdout);
+        } else if (c < 0x20 || c == 0x7f) {
+            printf("\\x%02x", c);
+        } else {
+            putchar(c);
+        }
+    }
+    putchar('"');
+}
+
+static int cmd_tokenize(int argc, char **argv)
+{
+    const char *path = NULL;
+    const char *prompt = NULL;
+    int add_bos = 1;
+    int add_eos = 0;
+    int ids_only = 0;
+    PgModelFile *model = NULL;
+    PgTokenizer *tok = NULL;
+    PgTokenBuffer tokens = { 0 };
+    char err[256];
+    size_t i;
+    int rc = 1;
+
+    for (i = 2; i < (size_t)argc; i++) {
+        if (!strcmp(argv[i], "-m") && i + 1 < (size_t)argc) {
+            path = argv[++i];
+        } else if (!strcmp(argv[i], "-p") && i + 1 < (size_t)argc) {
+            prompt = argv[++i];
+        } else if (!strcmp(argv[i], "--no-bos")) {
+            add_bos = 0;
+        } else if (!strcmp(argv[i], "--eos")) {
+            add_eos = 1;
+        } else if (!strcmp(argv[i], "--ids-only")) {
+            ids_only = 1;
+        } else {
+            fprintf(stderr,
+                    "usage: %s tokenize -m <model.gguf> -p <prompt> [--no-bos] [--eos] [--ids-only]\n",
+                    argv[0]);
+            return 2;
+        }
+    }
+    if (!path || !prompt) {
+        fprintf(stderr,
+                "usage: %s tokenize -m <model.gguf> -p <prompt> [--no-bos] [--eos] [--ids-only]\n",
+                argv[0]);
+        return 2;
+    }
+
+    model = pg_model_file_open(path, err, sizeof(err));
+    if (!model) {
+        fprintf(stderr, "peregrine: %s\n", err);
+        goto done;
+    }
+    tok = pg_tokenizer_from_model_file(model, err, sizeof(err));
+    if (!tok) {
+        fprintf(stderr, "peregrine: %s\n", err);
+        goto done;
+    }
+    if (pg_tokenizer_encode(tok, prompt, add_bos, add_eos, &tokens) != 0) {
+        fprintf(stderr, "peregrine: failed to tokenize prompt\n");
+        goto done;
+    }
+
+    if (ids_only) {
+        for (i = 0; i < tokens.count; i++) {
+            if (i)
+                putchar(' ');
+            printf("%d", tokens.data[i]);
+        }
+        putchar('\n');
+    } else {
+        printf("count: %zu\nids:", tokens.count);
+        for (i = 0; i < tokens.count; i++)
+            printf(" %d", tokens.data[i]);
+        putchar('\n');
+        for (i = 0; i < tokens.count; i++) {
+            char text[4096];
+            size_t written = 0;
+
+            printf("%4zu  %8d  ", i, tokens.data[i]);
+            if (pg_tokenizer_decode_token(tok, tokens.data[i],
+                                          text, sizeof(text), &written) == 0) {
+                print_escaped(text, written);
+            } else {
+                fputs("<decode-error>", stdout);
+            }
+            putchar('\n');
+        }
+    }
+    rc = 0;
+
+done:
+    pg_token_buffer_free(&tokens);
+    pg_tokenizer_free(tok);
+    pg_model_file_free(model);
+    return rc;
+}
+
+static int token_selected(const int32_t *ids, size_t n, int32_t id)
+{
+    size_t i;
+
+    for (i = 0; i < n; i++) {
+        if (ids[i] == id)
+            return 1;
+    }
+    return 0;
+}
+
+static int cmd_logits(int argc, char **argv)
+{
+    const char *path = NULL;
+    const char *prompt = NULL;
+    size_t top_n = 16;
+    int add_bos = 1;
+    PgLlamaModel *model = NULL;
+    PgLlamaContext *ctx = NULL;
+    const PgTokenizer *tok;
+    PgTokenBuffer prompt_tokens = { 0 };
+    const float *logits = NULL;
+    int32_t *top_ids = NULL;
+    char err[256];
+    size_t i;
+    int rc = 1;
+
+    for (i = 2; i < (size_t)argc; i++) {
+        if (!strcmp(argv[i], "-m") && i + 1 < (size_t)argc) {
+            path = argv[++i];
+        } else if (!strcmp(argv[i], "-p") && i + 1 < (size_t)argc) {
+            prompt = argv[++i];
+        } else if (!strcmp(argv[i], "--top") && i + 1 < (size_t)argc) {
+            if (parse_size_arg(argv[++i], &top_n) != 0 || top_n == 0) {
+                fprintf(stderr, "peregrine: invalid --top value\n");
+                return 2;
+            }
+        } else if (!strcmp(argv[i], "--no-bos")) {
+            add_bos = 0;
+        } else {
+            fprintf(stderr,
+                    "usage: %s logits -m <model.gguf> -p <prompt> [--top n] [--no-bos]\n",
+                    argv[0]);
+            return 2;
+        }
+    }
+    if (!path || !prompt) {
+        fprintf(stderr,
+                "usage: %s logits -m <model.gguf> -p <prompt> [--top n] [--no-bos]\n",
+                argv[0]);
+        return 2;
+    }
+
+    model = pg_llama_model_load(path, err, sizeof(err));
+    if (!model) {
+        fprintf(stderr, "peregrine: %s\n", err);
+        goto done;
+    }
+    ctx = pg_llama_context_new(model, 0, err, sizeof(err));
+    if (!ctx) {
+        fprintf(stderr, "peregrine: %s\n", err);
+        goto done;
+    }
+    tok = pg_llama_model_tokenizer(model);
+    if (pg_tokenizer_encode(tok, prompt, add_bos, 0, &prompt_tokens) != 0 ||
+        prompt_tokens.count == 0) {
+        fprintf(stderr, "peregrine: failed to tokenize prompt\n");
+        goto done;
+    }
+    for (i = 0; i < prompt_tokens.count; i++) {
+        if (pg_llama_eval_token(ctx, prompt_tokens.data[i],
+                                &logits, err, sizeof(err)) != 0) {
+            fprintf(stderr, "peregrine: %s\n", err);
+            goto done;
+        }
+    }
+
+    if (top_n > pg_llama_model_vocab_size(model))
+        top_n = pg_llama_model_vocab_size(model);
+    top_ids = malloc(top_n * sizeof(*top_ids));
+    if (!top_ids) {
+        fprintf(stderr, "peregrine: out of memory\n");
+        goto done;
+    }
+
+    printf("prompt_tokens:");
+    for (i = 0; i < prompt_tokens.count; i++)
+        printf(" %d", prompt_tokens.data[i]);
+    printf("\nposition: %zu\n", pg_llama_context_position(ctx));
+    printf("top_logits:\n");
+    for (i = 0; i < top_n; i++) {
+        int32_t best_id = -1;
+        float best = 0.0f;
+        size_t j;
+
+        for (j = 0; j < pg_llama_model_vocab_size(model); j++) {
+            if (token_selected(top_ids, i, (int32_t)j))
+                continue;
+            if (best_id < 0 || logits[j] > best) {
+                best_id = (int32_t)j;
+                best = logits[j];
+            }
+        }
+        top_ids[i] = best_id;
+        printf("%4zu  %8d  %.9g  ", i, best_id, best);
+        if (best_id >= 0) {
+            char text[4096];
+            size_t written = 0;
+
+            if (pg_tokenizer_decode_token(tok, best_id,
+                                          text, sizeof(text), &written) == 0)
+                print_escaped(text, written);
+            else
+                fputs("<decode-error>", stdout);
+        }
+        putchar('\n');
+    }
+    rc = 0;
+
+done:
+    free(top_ids);
+    pg_token_buffer_free(&prompt_tokens);
+    pg_llama_context_free(ctx);
+    pg_llama_model_free(model);
+    return rc;
+}
+
 static int cmd_run(int argc, char **argv)
 {
     const char *path = NULL;
     const char *prompt = NULL;
     size_t n_predict = 32;
+    PgSamplerParams sampler_params = { 0.0f, 0, 1.0f, 0 };
+    PgSampler *sampler = NULL;
     PgLlamaModel *model = NULL;
     PgLlamaContext *ctx = NULL;
     const PgTokenizer *tok;
@@ -112,16 +384,46 @@ static int cmd_run(int argc, char **argv)
                 fprintf(stderr, "peregrine: invalid -n value\n");
                 return 2;
             }
+        } else if ((!strcmp(argv[i], "--temp") || !strcmp(argv[i], "--temperature")) &&
+                   i + 1 < (size_t)argc) {
+            if (parse_float_arg(argv[++i], &sampler_params.temperature) != 0) {
+                fprintf(stderr, "peregrine: invalid temperature value\n");
+                return 2;
+            }
+        } else if (!strcmp(argv[i], "--top-k") && i + 1 < (size_t)argc) {
+            if (parse_size_arg(argv[++i], &sampler_params.top_k) != 0) {
+                fprintf(stderr, "peregrine: invalid top-k value\n");
+                return 2;
+            }
+        } else if (!strcmp(argv[i], "--top-p") && i + 1 < (size_t)argc) {
+            if (parse_float_arg(argv[++i], &sampler_params.top_p) != 0) {
+                fprintf(stderr, "peregrine: invalid top-p value\n");
+                return 2;
+            }
+        } else if (!strcmp(argv[i], "--seed") && i + 1 < (size_t)argc) {
+            if (parse_u64_arg(argv[++i], &sampler_params.seed) != 0) {
+                fprintf(stderr, "peregrine: invalid seed value\n");
+                return 2;
+            }
         } else {
-            fprintf(stderr, "usage: %s run -m <model.gguf> -p <prompt> [-n tokens]\n", argv[0]);
+            fprintf(stderr,
+                    "usage: %s run -m <model.gguf> -p <prompt> [-n tokens] [--temp t] [--top-k k] [--top-p p] [--seed s]\n",
+                    argv[0]);
             return 2;
         }
     }
     if (!path || !prompt) {
-        fprintf(stderr, "usage: %s run -m <model.gguf> -p <prompt> [-n tokens]\n", argv[0]);
+        fprintf(stderr,
+                "usage: %s run -m <model.gguf> -p <prompt> [-n tokens] [--temp t] [--top-k k] [--top-p p] [--seed s]\n",
+                argv[0]);
         return 2;
     }
 
+    sampler = pg_sampler_new(&sampler_params, err, sizeof(err));
+    if (!sampler) {
+        fprintf(stderr, "peregrine: %s\n", err);
+        goto done;
+    }
     model = pg_llama_model_load(path, err, sizeof(err));
     if (!model) {
         fprintf(stderr, "peregrine: %s\n", err);
@@ -152,10 +454,11 @@ static int cmd_run(int argc, char **argv)
     for (i = 0; i < n_predict; i++) {
         char text[4096];
         size_t written = 0;
-        int32_t next = pg_llama_sample_greedy(logits, pg_llama_model_vocab_size(model));
+        int32_t next = pg_llama_sample(logits, pg_llama_model_vocab_size(model),
+                                       sampler, err, sizeof(err));
 
         if (next < 0) {
-            fprintf(stderr, "\nperegrine: failed to sample next token\n");
+            fprintf(stderr, "\nperegrine: %s\n", err[0] ? err : "failed to sample next token");
             goto done;
         }
         if (next == pg_tokenizer_eos_id(tok))
@@ -175,6 +478,7 @@ static int cmd_run(int argc, char **argv)
     rc = 0;
 
 done:
+    pg_sampler_free(sampler);
     pg_token_buffer_free(&prompt_tokens);
     pg_llama_context_free(ctx);
     pg_llama_model_free(model);
@@ -188,8 +492,10 @@ static int usage(const char *argv0)
         "usage:\n"
         "  %s info                         show build + detected CPU features\n"
         "  %s inspect -m <model>            show model tensor directory\n"
-        "  %s run -m <model.gguf> -p <txt>  run greedy f32 GGUF inference\n",
-        PEREGRINE_VERSION_STRING, argv0, argv0, argv0);
+        "  %s tokenize -m <model> -p <txt>  print tokenizer token IDs\n"
+        "  %s logits -m <model> -p <txt>    print top logits after prompt\n"
+        "  %s run -m <model.gguf> -p <txt>  run f32 GGUF inference\n",
+        PEREGRINE_VERSION_STRING, argv0, argv0, argv0, argv0, argv0);
     return 2;
 }
 
@@ -201,6 +507,10 @@ int main(int argc, char **argv)
         return cmd_info();
     if (!strcmp(argv[1], "inspect"))
         return cmd_inspect(argc, argv);
+    if (!strcmp(argv[1], "tokenize"))
+        return cmd_tokenize(argc, argv);
+    if (!strcmp(argv[1], "logits"))
+        return cmd_logits(argc, argv);
     if (!strcmp(argv[1], "run"))
         return cmd_run(argc, argv);
     return usage(argv[0]);

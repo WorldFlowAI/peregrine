@@ -70,6 +70,19 @@ static void write_strn(FILE *f, const void *s, size_t n)
     write_all(f, s, n);
 }
 
+static void write_sp_piece(FILE *f, const char *suffix)
+{
+    static const char sp[] = "\xE2\x96\x81";
+    char token[64];
+    size_t suffix_len = strlen(suffix);
+
+    if (sizeof(sp) - 1 + suffix_len > sizeof(token))
+        exit(2);
+    memcpy(token, sp, sizeof(sp) - 1);
+    memcpy(token + sizeof(sp) - 1, suffix, suffix_len);
+    write_strn(f, token, sizeof(sp) - 1 + suffix_len);
+}
+
 static char *make_temp_path(void)
 {
     char tmpl[] = "/tmp/peregrine-tokenizer-XXXXXX";
@@ -88,7 +101,6 @@ static char *make_temp_path(void)
 
 static void write_tokenizer_fixture(const char *path)
 {
-    static const char sp[] = "\xE2\x96\x81";
     FILE *f = fopen(path, "wb");
     long pos;
     unsigned pad;
@@ -124,32 +136,40 @@ static void write_tokenizer_fixture(const char *path)
     write_str(f, "tokenizer.ggml.tokens");
     write_u32(f, 9);
     write_u32(f, 8);
-    write_u64(f, 6);
+    write_u64(f, 14);
     write_str(f, "<unk>");
     write_str(f, "<s>");
     write_str(f, "</s>");
-    {
-        char token[16];
-
-        memcpy(token, sp, 3);
-        memcpy(token + 3, "hello", 5);
-        write_strn(f, token, 8);
-        memcpy(token, sp, 3);
-        memcpy(token + 3, "world", 5);
-        write_strn(f, token, 8);
-    }
+    write_sp_piece(f, "hello");
+    write_sp_piece(f, "world");
     write_str(f, "<0x21>");
+    write_sp_piece(f, "h");
+    write_sp_piece(f, "he");
+    write_sp_piece(f, "hel");
+    write_sp_piece(f, "hell");
+    write_sp_piece(f, "w");
+    write_sp_piece(f, "wo");
+    write_sp_piece(f, "wor");
+    write_sp_piece(f, "worl");
 
     write_str(f, "tokenizer.ggml.scores");
     write_u32(f, 9);
     write_u32(f, 6);
-    write_u64(f, 6);
+    write_u64(f, 14);
     write_f32(f, -10.0f);
     write_f32(f, 0.0f);
     write_f32(f, 0.0f);
-    write_f32(f, 5.0f);
-    write_f32(f, 5.0f);
+    write_f32(f, 10.0f);
+    write_f32(f, 10.0f);
     write_f32(f, 0.0f);
+    write_f32(f, 1.0f);
+    write_f32(f, 2.0f);
+    write_f32(f, 3.0f);
+    write_f32(f, 4.0f);
+    write_f32(f, 1.0f);
+    write_f32(f, 2.0f);
+    write_f32(f, 3.0f);
+    write_f32(f, 4.0f);
 
     write_str(f, "llama.context_length");
     write_u32(f, 4);
@@ -187,7 +207,7 @@ static void test_tokenizer(void)
     tok = pg_tokenizer_from_model_file(model, err, sizeof(err));
     CHECK(tok != NULL);
     if (tok) {
-        CHECK(pg_tokenizer_vocab_size(tok) == 6);
+        CHECK(pg_tokenizer_vocab_size(tok) == 14);
         CHECK(pg_tokenizer_bos_id(tok) == 1);
         CHECK(pg_tokenizer_eos_id(tok) == 2);
         CHECK(pg_tokenizer_encode(tok, "hello world!", 1, 1, &buf) == 0);

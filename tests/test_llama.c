@@ -249,6 +249,56 @@ static void write_tiny_llama_gguf(const char *path)
     fclose(f);
 }
 
+static void test_sampler(void)
+{
+    float logits[] = { 0.1f, 0.2f, 0.3f, 2.0f };
+    PgSamplerParams params;
+    PgSampler *sampler;
+    char err[128];
+
+    CHECK(pg_llama_sample_greedy(logits, 4) == 3);
+
+    params.temperature = 0.0f;
+    params.top_k = 0;
+    params.top_p = 1.0f;
+    params.seed = 1234;
+    sampler = pg_sampler_new(&params, err, sizeof(err));
+    CHECK(sampler != NULL);
+    if (sampler) {
+        CHECK(pg_llama_sample(logits, 4, sampler, err, sizeof(err)) == 3);
+        pg_sampler_free(sampler);
+    }
+
+    params.temperature = 1.0f;
+    params.top_k = 1;
+    params.top_p = 1.0f;
+    params.seed = 1234;
+    sampler = pg_sampler_new(&params, err, sizeof(err));
+    CHECK(sampler != NULL);
+    if (sampler) {
+        CHECK(pg_llama_sample(logits, 4, sampler, err, sizeof(err)) == 3);
+        pg_sampler_free(sampler);
+    }
+
+    params.temperature = 1.0f;
+    params.top_k = 0;
+    params.top_p = 0.01f;
+    params.seed = 1234;
+    sampler = pg_sampler_new(&params, err, sizeof(err));
+    CHECK(sampler != NULL);
+    if (sampler) {
+        CHECK(pg_llama_sample(logits, 4, sampler, err, sizeof(err)) == 3);
+        pg_sampler_free(sampler);
+    }
+
+    params.temperature = -1.0f;
+    params.top_k = 0;
+    params.top_p = 1.0f;
+    params.seed = 0;
+    sampler = pg_sampler_new(&params, err, sizeof(err));
+    CHECK(sampler == NULL);
+}
+
 int main(void)
 {
     char err[256];
@@ -288,5 +338,6 @@ free_model:
 done:
     unlink(path);
     free(path);
+    test_sampler();
     return failures ? 1 : 0;
 }

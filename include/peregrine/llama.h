@@ -15,6 +15,14 @@ extern "C" {
 
 typedef struct PgLlamaModel PgLlamaModel;
 typedef struct PgLlamaContext PgLlamaContext;
+typedef struct PgSampler PgSampler;
+
+typedef struct PgSamplerParams {
+    float temperature;  /* <= 0: greedy */
+    size_t top_k;       /* 0: disabled */
+    float top_p;        /* <= 0 or >= 1: disabled */
+    uint64_t seed;
+} PgSamplerParams;
 
 PgLlamaModel *pg_llama_model_load(const char *path, char *err, size_t err_len);
 void pg_llama_model_free(PgLlamaModel *model);
@@ -37,6 +45,10 @@ const float *pg_llama_logits(const PgLlamaContext *ctx);
 size_t pg_llama_context_position(const PgLlamaContext *ctx);
 
 int32_t pg_llama_sample_greedy(const float *logits, size_t n_logits);
+PgSampler *pg_sampler_new(const PgSamplerParams *params, char *err, size_t err_len);
+void pg_sampler_free(PgSampler *sampler);
+int32_t pg_llama_sample(const float *logits, size_t n_logits,
+                        PgSampler *sampler, char *err, size_t err_len);
 
 #ifdef __cplusplus
 }

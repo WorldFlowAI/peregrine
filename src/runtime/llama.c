@@ -97,6 +97,19 @@ struct PgLlamaContext {
     float *logits;
 };
 
+typedef struct PgSampleCandidate {
+    int32_t id;
+    float logit;
+    double prob;
+} PgSampleCandidate;
+
+struct PgSampler {
+    PgSamplerParams params;
+    uint64_t state[4];
+    PgSampleCandidate *candidates;
+    size_t capacity;
+};
+
 static void set_err(char *err, size_t err_len, const char *fmt, ...)
 {
     va_list ap;
@@ -583,9 +596,9 @@ static int eval_layer(PgLlamaContext *ctx, size_t layer_idx)
                   ctx->norm, ctx->v);
 
     m->rope.apply(ctx->q, ctx->q, ctx->cos, ctx->sin, 1,
-                  m->n_head, m->head_dim, PG_ROPE_NEOX);
+                  m->n_head, m->head_dim, PG_ROPE_INTERLEAVED);
     m->rope.apply(ctx->k, ctx->k, ctx->cos, ctx->sin, 1,
-                  m->n_head_kv, m->head_dim, PG_ROPE_NEOX);
+                  m->n_head_kv, m->head_dim, PG_ROPE_INTERLEAVED);
 
     k_slot = cache_ptr(ctx->key_cache, ctx, layer_idx, ctx->pos);
     v_slot = cache_ptr(ctx->value_cache, ctx, layer_idx, ctx->pos);
@@ -694,6 +707,22 @@ size_t pg_llama_context_position(const PgLlamaContext *ctx)
     return ctx ? ctx->pos : 0;
 }
 
+static int candidate_cmp_desc(const void *a, const void *b)
+{
+    const PgSampleCandidate *ca = a;
+    const PgSampleCandidate *cb = b;
+
+    if (ca->logit < cb->logit)
+        return 1;
+    if (ca->logit > cb->logit)
+        return -1;
+    if (ca->id > cb->id)
+        return 1;
+    if (ca->id < cb->id)
+        return -1;
+    return 0;
+}
+
 int32_t pg_llama_sample_greedy(const float *logits, size_t n_logits)
 {
     int32_t best = -1;
@@ -712,4 +741,194 @@ int32_t pg_llama_sample_greedy(const float *logits, size_t n_logits)
         }
     }
     return best;
+}
+
+static uint64_t splitmix64(uint64_t *x)
+{
+    uint64_t z;
+
+    *x += 0x9e3779b97f4a7c15ull;
+    z = *x;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+    return z ^ (z >> 31);
+}
+
+static void sampler_seed(PgSampler *sampler, uint64_t seed)
+{
+    uint64_t s = seed ? seed : 0x9e3779b97f4a7c15ull;
+    size_t i;
+
+    for (i = 0; i < 4; i++)
+        sampler->state[i] = splitmix64(&s);
+}
+
+static uint64_t rotl64(uint64_t x, int k)
+{
+    return (x << k) | (x >> (64 - k));
+}
+
+static uint64_t sampler_rng(PgSampler *sampler)
+{
+    uint64_t *s = sampler->state;
+    uint64_t result = rotl64(s[1] * 5, 7) * 9;
+    uint64_t t = s[1] << 17;
+
+    s[2] ^= s[0];
+    s[3] ^= s[1];
+    s[1] ^= s[2];
+    s[0] ^= s[3];
+    s[2] ^= t;
+    s[3] = rotl64(s[3], 45);
+    return result;
+}
+
+static double sampler_uniform(PgSampler *sampler)
+{
+    return (double)(sampler_rng(sampler) >> 11) * (1.0 / 9007199254740992.0);
+}
+
+PgSampler *pg_sampler_new(const PgSamplerParams *params, char *err, size_t err_len)
+{
+    PgSamplerParams p;
+    PgSampler *sampler;
+
+    if (err && err_len)
+        err[0] = '\0';
+    if (params) {
+        p = *params;
+    } else {
+        p.temperature = 0.0f;
+        p.top_k = 0;
+        p.top_p = 1.0f;
+        p.seed = 0;
+    }
+    if (!isfinite(p.temperature) || p.temperature < 0.0f) {
+        set_err(err, err_len, "invalid sampler temperature");
+        return NULL;
+    }
+    if (!isfinite(p.top_p) || p.top_p < 0.0f) {
+        set_err(err, err_len, "invalid sampler top-p");
+        return NULL;
+    }
+
+    sampler = calloc(1, sizeof(*sampler));
+    if (!sampler) {
+        set_err(err, err_len, "out of memory");
+        return NULL;
+    }
+    sampler->params = p;
+    sampler_seed(sampler, p.seed);
+    return sampler;
+}
+
+void pg_sampler_free(PgSampler *sampler)
+{
+    if (!sampler)
+        return;
+    free(sampler->candidates);
+    free(sampler);
+}
+
+static int sampler_reserve(PgSampler *sampler, size_t n, char *err, size_t err_len)
+{
+    PgSampleCandidate *next;
+
+    if (n <= sampler->capacity)
+        return 0;
+    next = realloc(sampler->candidates, n * sizeof(*next));
+    if (!next) {
+        set_err(err, err_len, "out of memory");
+        return -1;
+    }
+    sampler->candidates = next;
+    sampler->capacity = n;
+    return 0;
+}
+
+int32_t pg_llama_sample(const float *logits, size_t n_logits,
+                        PgSampler *sampler, char *err, size_t err_len)
+{
+    PgSampleCandidate *c;
+    size_t count = 0;
+    size_t keep;
+    size_t i;
+    double max_logit;
+    double sum = 0.0;
+    double mass;
+    double r;
+
+    if (err && err_len)
+        err[0] = '\0';
+    if (!sampler)
+        return pg_llama_sample_greedy(logits, n_logits);
+    if (!logits || n_logits == 0 || n_logits > (size_t)INT32_MAX) {
+        set_err(err, err_len, "invalid logits");
+        return -1;
+    }
+    if (sampler->params.temperature <= 0.0f)
+        return pg_llama_sample_greedy(logits, n_logits);
+    if (sampler_reserve(sampler, n_logits, err, err_len) != 0)
+        return -1;
+
+    c = sampler->candidates;
+    for (i = 0; i < n_logits; i++) {
+        if (!isfinite(logits[i]))
+            continue;
+        c[count].id = (int32_t)i;
+        c[count].logit = logits[i];
+        c[count].prob = 0.0;
+        count++;
+    }
+    if (count == 0) {
+        set_err(err, err_len, "no finite logits to sample");
+        return -1;
+    }
+
+    qsort(c, count, sizeof(*c), candidate_cmp_desc);
+    keep = count;
+    if (sampler->params.top_k > 0 && sampler->params.top_k < keep)
+        keep = sampler->params.top_k;
+
+    max_logit = (double)c[0].logit / (double)sampler->params.temperature;
+    for (i = 0; i < keep; i++) {
+        double x = (double)c[i].logit / (double)sampler->params.temperature;
+        c[i].prob = exp(x - max_logit);
+        sum += c[i].prob;
+    }
+    if (sum <= 0.0 || !isfinite(sum)) {
+        set_err(err, err_len, "invalid sampling probability mass");
+        return -1;
+    }
+    for (i = 0; i < keep; i++)
+        c[i].prob /= sum;
+
+    if (sampler->params.top_p > 0.0f && sampler->params.top_p < 1.0f) {
+        double p = 0.0;
+        size_t nucleus = 0;
+
+        while (nucleus < keep) {
+            p += c[nucleus].prob;
+            nucleus++;
+            if (p >= (double)sampler->params.top_p)
+                break;
+        }
+        keep = nucleus ? nucleus : 1;
+    }
+
+    mass = 0.0;
+    for (i = 0; i < keep; i++)
+        mass += c[i].prob;
+    if (mass <= 0.0 || !isfinite(mass)) {
+        set_err(err, err_len, "invalid sampling probability mass");
+        return -1;
+    }
+
+    r = sampler_uniform(sampler) * mass;
+    for (i = 0; i < keep; i++) {
+        if (r <= c[i].prob)
+            return c[i].id;
+        r -= c[i].prob;
+    }
+    return c[keep - 1].id;
 }
