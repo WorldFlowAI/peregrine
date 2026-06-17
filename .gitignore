@@ -13,3 +13,6 @@
 .DS_Store
 *.swp
 compile_commands.json
+
+# local planning
+/ROADMAP.md
