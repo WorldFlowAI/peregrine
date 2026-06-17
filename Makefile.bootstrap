@@ -109,6 +109,8 @@ ifeq ($(UNAME_M),x86_64)
     src/tensor/kernels/gemm/x86/sgemm_ukernel_avx2.o \
     src/tensor/kernels/gemv/gemv_avx2.o \
     src/tensor/kernels/gemm/gemm_bf16_avx2.o \
+    src/tensor/kernels/gemm/gemm_bf16_avx512bf16.o \
+    src/tensor/kernels/gemm/x86/bf16gemm_ukernel_avx512bf16.o \
     src/tensor/kernels/gemm/gemm_fp16_avx2.o
   CHECK_ASM := tests/checkasm/x86/checkasm.o
 %.o: %.asm

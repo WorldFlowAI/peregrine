@@ -47,6 +47,9 @@ unsigned pg_get_cpu_flags(void)
         if (b & (1u << 5))  flags |= PG_CPU_AVX2;
         if (b & (1u << 16)) flags |= PG_CPU_AVX512;
     }
+    if (__get_cpuid_count(7, 1, &a, &b, &c, &d)) {
+        if (a & (1u << 5))  flags |= PG_CPU_BF16;
+    }
 #elif PG_ARCH_AARCH64
     /* NEON (ASIMD) is mandatory on every AArch64 core. */
     flags |= PG_CPU_NEON;

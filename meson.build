@@ -94,6 +94,8 @@ if target_x86
     'src/tensor/kernels/gemm/gemm_avx2.c',
     'src/tensor/kernels/gemv/gemv_avx2.c',
     'src/tensor/kernels/gemm/gemm_bf16_avx2.c',
+    'src/tensor/kernels/gemm/gemm_bf16_avx512bf16.c',
+    'src/tensor/kernels/gemm/x86/bf16gemm_ukernel_avx512bf16.asm',
     'src/tensor/kernels/gemm/gemm_fp16_avx2.c',
   )
 elif target_arm
