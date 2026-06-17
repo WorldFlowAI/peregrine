@@ -16,6 +16,11 @@ extern "C" {
 
 #define PG_MAX_TENSOR_DIMS 8
 
+typedef struct PgStringView {
+    const char *data;
+    size_t len;
+} PgStringView;
+
 typedef enum PgModelFormat {
     PG_MODEL_FORMAT_UNKNOWN = 0,
     PG_MODEL_FORMAT_GGUF,
@@ -39,6 +44,39 @@ typedef enum PgTensorType {
     PG_TENSOR_TYPE_F64,
 } PgTensorType;
 
+typedef enum PgMetadataType {
+    PG_METADATA_TYPE_UNKNOWN = 0,
+    PG_METADATA_TYPE_U64,
+    PG_METADATA_TYPE_I64,
+    PG_METADATA_TYPE_F64,
+    PG_METADATA_TYPE_BOOL,
+    PG_METADATA_TYPE_STRING,
+    PG_METADATA_TYPE_ARRAY,
+} PgMetadataType;
+
+typedef struct PgMetadataValue {
+    PgMetadataType type;
+    PgMetadataType elem_type;
+    size_t count;
+    union {
+        uint64_t u64;
+        int64_t i64;
+        double f64;
+        int boolean;
+        PgStringView string;
+        const uint64_t *u64_array;
+        const int64_t *i64_array;
+        const double *f64_array;
+        const int *bool_array;
+        const PgStringView *string_array;
+    } as;
+} PgMetadataValue;
+
+typedef struct PgMetadataEntry {
+    PgStringView key;
+    PgMetadataValue value;
+} PgMetadataEntry;
+
 typedef struct PgTensorView {
     const char *name;
     size_t name_len;
@@ -55,14 +93,26 @@ PgModelFile *pg_model_file_open(const char *path, char *err, size_t err_len);
 void pg_model_file_free(PgModelFile *file);
 
 PgModelFormat pg_model_file_format(const PgModelFile *file);
+size_t pg_model_file_metadata_count(const PgModelFile *file);
+const PgMetadataEntry *pg_model_file_metadata(const PgModelFile *file, size_t idx);
+const PgMetadataEntry *pg_model_file_find_metadata(const PgModelFile *file,
+                                                   const char *key, size_t key_len);
 size_t pg_model_file_tensor_count(const PgModelFile *file);
 const PgTensorView *pg_model_file_tensor(const PgModelFile *file, size_t idx);
 const PgTensorView *pg_model_file_find_tensor(const PgModelFile *file,
                                               const char *name, size_t name_len);
 
 const char *pg_model_format_name(PgModelFormat format);
+const char *pg_metadata_type_name(PgMetadataType type);
 const char *pg_tensor_type_name(PgTensorType type);
 size_t pg_tensor_type_size(PgTensorType type);
+
+int pg_metadata_as_u64(const PgMetadataValue *value, uint64_t *out);
+int pg_metadata_as_i64(const PgMetadataValue *value, int64_t *out);
+int pg_metadata_as_f64(const PgMetadataValue *value, double *out);
+int pg_metadata_as_string(const PgMetadataValue *value, PgStringView *out);
+int pg_metadata_array_string(const PgMetadataValue *value, size_t idx,
+                             PgStringView *out);
 
 #ifdef __cplusplus
 }

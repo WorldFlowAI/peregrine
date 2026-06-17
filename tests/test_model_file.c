@@ -57,6 +57,11 @@ static void write_str(FILE *f, const char *s)
     write_all(f, s, strlen(s));
 }
 
+static int string_view_eq(PgStringView s, const char *lit)
+{
+    return s.len == strlen(lit) && memcmp(s.data, lit, s.len) == 0;
+}
+
 static void write_f32_bits(FILE *f, uint32_t bits)
 {
     write_u32(f, bits);
@@ -96,7 +101,7 @@ static void write_minimal_gguf(const char *path)
     write_all(f, "GGUF", 4);
     write_u32(f, 3);
     write_u64(f, 1); /* tensors */
-    write_u64(f, 2); /* metadata */
+    write_u64(f, 3); /* metadata */
 
     write_str(f, "general.alignment");
     write_u32(f, 4); /* uint32 */
@@ -105,6 +110,13 @@ static void write_minimal_gguf(const char *path)
     write_str(f, "general.architecture");
     write_u32(f, 8); /* string */
     write_str(f, "llama");
+
+    write_str(f, "tokenizer.ggml.tokens");
+    write_u32(f, 9); /* array */
+    write_u32(f, 8); /* string */
+    write_u64(f, 2);
+    write_str(f, "<s>");
+    write_str(f, "hello");
 
     write_str(f, "tok_embeddings.weight");
     write_u32(f, 2); /* dims */
@@ -161,6 +173,9 @@ static void test_gguf(void)
     char *path = make_temp_path("gguf");
     PgModelFile *m;
     const PgTensorView *t;
+    const PgMetadataEntry *meta;
+    PgStringView s;
+    uint64_t u;
 
     write_minimal_gguf(path);
     m = pg_model_file_open(path, err, sizeof(err));
@@ -171,6 +186,20 @@ static void test_gguf(void)
     }
 
     CHECK(pg_model_file_format(m) == PG_MODEL_FORMAT_GGUF);
+    CHECK(pg_model_file_metadata_count(m) == 3);
+    meta = pg_model_file_find_metadata(m, "general.alignment", 17);
+    CHECK(meta != NULL);
+    CHECK(meta && pg_metadata_as_u64(&meta->value, &u) == 0 && u == 32);
+    meta = pg_model_file_find_metadata(m, "general.architecture", 20);
+    CHECK(meta != NULL);
+    CHECK(meta && pg_metadata_as_string(&meta->value, &s) == 0 && string_view_eq(s, "llama"));
+    meta = pg_model_file_find_metadata(m, "tokenizer.ggml.tokens", 21);
+    CHECK(meta != NULL);
+    CHECK(meta && meta->value.type == PG_METADATA_TYPE_ARRAY);
+    CHECK(meta && meta->value.elem_type == PG_METADATA_TYPE_STRING);
+    CHECK(meta && meta->value.count == 2);
+    CHECK(meta && pg_metadata_array_string(&meta->value, 0, &s) == 0 && string_view_eq(s, "<s>"));
+    CHECK(meta && pg_metadata_array_string(&meta->value, 1, &s) == 0 && string_view_eq(s, "hello"));
     CHECK(pg_model_file_tensor_count(m) == 1);
     t = pg_model_file_find_tensor(m, "tok_embeddings.weight", 21);
     CHECK(t != NULL);

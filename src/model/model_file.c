@@ -17,6 +17,8 @@
 struct PgModelFile {
     PgModelFormat format;
     PgFileMap map;
+    PgMetadataEntry *metadata;
+    size_t metadata_count;
     PgTensorView *tensors;
     size_t tensor_count;
 };
@@ -120,12 +122,6 @@ static bool rd_bytes(Reader *r, size_t n, const unsigned char **out)
     return true;
 }
 
-static bool rd_skip(Reader *r, size_t n)
-{
-    const unsigned char *unused;
-    return rd_bytes(r, n, &unused);
-}
-
 static bool rd_u32(Reader *r, uint32_t *out)
 {
     const unsigned char *p;
@@ -134,6 +130,26 @@ static bool rd_u32(Reader *r, uint32_t *out)
         return false;
     *out = ((uint32_t)p[0]) | ((uint32_t)p[1] << 8) |
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+    return true;
+}
+
+static bool rd_u8(Reader *r, uint8_t *out)
+{
+    const unsigned char *p;
+
+    if (!rd_bytes(r, 1, &p))
+        return false;
+    *out = p[0];
+    return true;
+}
+
+static bool rd_u16(Reader *r, uint16_t *out)
+{
+    const unsigned char *p;
+
+    if (!rd_bytes(r, 2, &p))
+        return false;
+    *out = ((uint16_t)p[0]) | ((uint16_t)p[1] << 8);
     return true;
 }
 
@@ -147,6 +163,26 @@ static bool rd_u64(Reader *r, uint64_t *out)
            ((uint64_t)p[2] << 16) | ((uint64_t)p[3] << 24) |
            ((uint64_t)p[4] << 32) | ((uint64_t)p[5] << 40) |
            ((uint64_t)p[6] << 48) | ((uint64_t)p[7] << 56);
+    return true;
+}
+
+static bool rd_f32(Reader *r, float *out)
+{
+    uint32_t bits;
+
+    if (!rd_u32(r, &bits))
+        return false;
+    memcpy(out, &bits, sizeof(bits));
+    return true;
+}
+
+static bool rd_f64(Reader *r, double *out)
+{
+    uint64_t bits;
+
+    if (!rd_u64(r, &bits))
+        return false;
+    memcpy(out, &bits, sizeof(bits));
     return true;
 }
 
@@ -168,76 +204,271 @@ static bool rd_string(Reader *r, const char **str, size_t *len)
     return true;
 }
 
-static size_t gguf_value_fixed_size(uint32_t type)
+static PgMetadataType gguf_metadata_type(uint32_t raw_type)
 {
-    switch (type) {
+    switch (raw_type) {
     case 0:
-    case 1:
-    case 7:
-        return 1;
     case 2:
-    case 3:
-        return 2;
     case 4:
-    case 5:
-    case 6:
-        return 4;
     case 10:
+        return PG_METADATA_TYPE_U64;
+    case 1:
+    case 3:
+    case 5:
     case 11:
+        return PG_METADATA_TYPE_I64;
+    case 6:
     case 12:
-        return 8;
+        return PG_METADATA_TYPE_F64;
+    case 7:
+        return PG_METADATA_TYPE_BOOL;
+    case 8:
+        return PG_METADATA_TYPE_STRING;
+    case 9:
+        return PG_METADATA_TYPE_ARRAY;
     default:
-        return 0;
+        return PG_METADATA_TYPE_UNKNOWN;
     }
 }
 
-static bool gguf_skip_value(Reader *r, uint32_t type, unsigned depth)
+static void metadata_value_free(PgMetadataValue *value)
 {
-    uint32_t elem_type;
-    uint64_t len;
-    size_t fixed;
-    size_t bytes;
-    uint64_t i;
-
-    if (depth > 8) {
-        reader_err(r, "metadata arrays nested too deeply");
-        return false;
+    if (!value)
+        return;
+    if (value->type == PG_METADATA_TYPE_ARRAY) {
+        switch (value->elem_type) {
+        case PG_METADATA_TYPE_U64:
+            free((void *)value->as.u64_array);
+            break;
+        case PG_METADATA_TYPE_I64:
+            free((void *)value->as.i64_array);
+            break;
+        case PG_METADATA_TYPE_F64:
+            free((void *)value->as.f64_array);
+            break;
+        case PG_METADATA_TYPE_BOOL:
+            free((void *)value->as.bool_array);
+            break;
+        case PG_METADATA_TYPE_STRING:
+            free((void *)value->as.string_array);
+            break;
+        default:
+            break;
+        }
     }
+    memset(value, 0, sizeof(*value));
+}
 
-    fixed = gguf_value_fixed_size(type);
-    if (fixed)
-        return rd_skip(r, fixed);
+static void metadata_free(PgModelFile *file)
+{
+    size_t i;
 
-    switch (type) {
+    if (!file || !file->metadata)
+        return;
+    for (i = 0; i < file->metadata_count; i++)
+        metadata_value_free(&file->metadata[i].value);
+    free(file->metadata);
+    file->metadata = NULL;
+    file->metadata_count = 0;
+}
+
+static bool gguf_read_scalar(Reader *r, uint32_t raw_type, PgMetadataValue *value)
+{
+    uint8_t u8;
+    uint16_t u16;
+    uint32_t u32;
+    uint64_t u64;
+    float f32;
+    double f64;
+    const char *str;
+    size_t len;
+
+    memset(value, 0, sizeof(*value));
+    value->type = gguf_metadata_type(raw_type);
+    switch (raw_type) {
+    case 0:
+        if (!rd_u8(r, &u8)) return false;
+        value->as.u64 = u8;
+        return true;
+    case 1:
+        if (!rd_u8(r, &u8)) return false;
+        value->as.i64 = (int8_t)u8;
+        return true;
+    case 2:
+        if (!rd_u16(r, &u16)) return false;
+        value->as.u64 = u16;
+        return true;
+    case 3:
+        if (!rd_u16(r, &u16)) return false;
+        value->as.i64 = (int16_t)u16;
+        return true;
+    case 4:
+        if (!rd_u32(r, &u32)) return false;
+        value->as.u64 = u32;
+        return true;
+    case 5:
+        if (!rd_u32(r, &u32)) return false;
+        value->as.i64 = (int32_t)u32;
+        return true;
+    case 6:
+        if (!rd_f32(r, &f32)) return false;
+        value->as.f64 = f32;
+        return true;
+    case 7:
+        if (!rd_u8(r, &u8)) return false;
+        value->as.boolean = !!u8;
+        return true;
     case 8:
-        if (!rd_u64(r, &len))
-            return false;
-        if (len > SIZE_MAX) {
-            reader_err(r, "metadata string too large");
-            return false;
-        }
-        return rd_skip(r, (size_t)len);
-    case 9:
-        if (!rd_u32(r, &elem_type) || !rd_u64(r, &len))
-            return false;
-        fixed = gguf_value_fixed_size(elem_type);
-        if (fixed) {
-            if (len > SIZE_MAX / fixed) {
-                reader_err(r, "metadata array too large");
-                return false;
-            }
-            bytes = (size_t)len * fixed;
-            return rd_skip(r, bytes);
-        }
-        for (i = 0; i < len; i++) {
-            if (!gguf_skip_value(r, elem_type, depth + 1))
-                return false;
-        }
+        if (!rd_string(r, &str, &len)) return false;
+        value->as.string.data = str;
+        value->as.string.len = len;
+        return true;
+    case 10:
+        if (!rd_u64(r, &u64)) return false;
+        value->as.u64 = u64;
+        return true;
+    case 11:
+        if (!rd_u64(r, &u64)) return false;
+        value->as.i64 = (int64_t)u64;
+        return true;
+    case 12:
+        if (!rd_f64(r, &f64)) return false;
+        value->as.f64 = f64;
         return true;
     default:
-        reader_err(r, "unsupported GGUF metadata value type %u", type);
+        reader_err(r, "unsupported GGUF metadata value type %u", raw_type);
         return false;
     }
+}
+
+static bool gguf_read_value(Reader *r, uint32_t raw_type, PgMetadataValue *value)
+{
+    uint32_t elem_raw_type;
+    PgMetadataType elem_type;
+    uint64_t len;
+    size_t count;
+    size_t i;
+
+    memset(value, 0, sizeof(*value));
+    if (raw_type != 9)
+        return gguf_read_scalar(r, raw_type, value);
+
+    if (!rd_u32(r, &elem_raw_type) || !rd_u64(r, &len))
+        return false;
+    elem_type = gguf_metadata_type(elem_raw_type);
+    if (elem_type == PG_METADATA_TYPE_UNKNOWN || elem_type == PG_METADATA_TYPE_ARRAY) {
+        reader_err(r, "unsupported GGUF metadata array type %u", elem_raw_type);
+        return false;
+    }
+    if (len > SIZE_MAX) {
+        reader_err(r, "metadata array too large");
+        return false;
+    }
+
+    count = (size_t)len;
+    value->type = PG_METADATA_TYPE_ARRAY;
+    value->elem_type = elem_type;
+    value->count = count;
+
+    switch (elem_type) {
+    case PG_METADATA_TYPE_U64: {
+        uint64_t *arr = calloc(count ? count : 1, sizeof(*arr));
+        if (!arr) {
+            reader_err(r, "out of memory");
+            return false;
+        }
+        for (i = 0; i < count; i++) {
+            PgMetadataValue elem;
+            if (!gguf_read_scalar(r, elem_raw_type, &elem)) {
+                free(arr);
+                return false;
+            }
+            arr[i] = elem.as.u64;
+        }
+        value->as.u64_array = arr;
+        return true;
+    }
+    case PG_METADATA_TYPE_I64: {
+        int64_t *arr = calloc(count ? count : 1, sizeof(*arr));
+        if (!arr) {
+            reader_err(r, "out of memory");
+            return false;
+        }
+        for (i = 0; i < count; i++) {
+            PgMetadataValue elem;
+            if (!gguf_read_scalar(r, elem_raw_type, &elem)) {
+                free(arr);
+                return false;
+            }
+            arr[i] = elem.as.i64;
+        }
+        value->as.i64_array = arr;
+        return true;
+    }
+    case PG_METADATA_TYPE_F64: {
+        double *arr = calloc(count ? count : 1, sizeof(*arr));
+        if (!arr) {
+            reader_err(r, "out of memory");
+            return false;
+        }
+        for (i = 0; i < count; i++) {
+            PgMetadataValue elem;
+            if (!gguf_read_scalar(r, elem_raw_type, &elem)) {
+                free(arr);
+                return false;
+            }
+            arr[i] = elem.as.f64;
+        }
+        value->as.f64_array = arr;
+        return true;
+    }
+    case PG_METADATA_TYPE_BOOL: {
+        int *arr = calloc(count ? count : 1, sizeof(*arr));
+        if (!arr) {
+            reader_err(r, "out of memory");
+            return false;
+        }
+        for (i = 0; i < count; i++) {
+            PgMetadataValue elem;
+            if (!gguf_read_scalar(r, elem_raw_type, &elem)) {
+                free(arr);
+                return false;
+            }
+            arr[i] = elem.as.boolean;
+        }
+        value->as.bool_array = arr;
+        return true;
+    }
+    case PG_METADATA_TYPE_STRING: {
+        PgStringView *arr = calloc(count ? count : 1, sizeof(*arr));
+        if (!arr) {
+            reader_err(r, "out of memory");
+            return false;
+        }
+        for (i = 0; i < count; i++) {
+            PgMetadataValue elem;
+            if (!gguf_read_scalar(r, elem_raw_type, &elem)) {
+                free(arr);
+                return false;
+            }
+            arr[i] = elem.as.string;
+        }
+        value->as.string_array = arr;
+        return true;
+    }
+    default:
+        break;
+    }
+    reader_err(r, "unsupported GGUF metadata array type %u", elem_raw_type);
+    return false;
+}
+
+static bool metadata_value_as_u64(const PgMetadataValue *value, uint64_t *out)
+{
+    if (!value || value->type != PG_METADATA_TYPE_U64)
+        return false;
+    *out = value->as.u64;
+    return true;
 }
 
 static PgTensorType gguf_tensor_type(uint32_t type)
@@ -263,6 +494,7 @@ static bool parse_gguf(PgModelFile *file, char *err, size_t err_len)
     uint64_t metadata_count;
     uint64_t i;
     uint32_t alignment = GGUF_DEFAULT_ALIGNMENT;
+    PgMetadataEntry *metadata;
     PgTensorView *tensors;
     uint64_t *offsets;
     size_t tensor_data_base;
@@ -283,25 +515,43 @@ static bool parse_gguf(PgModelFile *file, char *err, size_t err_len)
         set_err(err, err_len, "too many GGUF tensors");
         return false;
     }
+    if (metadata_count > SIZE_MAX / sizeof(*metadata)) {
+        set_err(err, err_len, "too many GGUF metadata entries");
+        return false;
+    }
 
+    metadata = calloc((size_t)metadata_count ? (size_t)metadata_count : 1, sizeof(*metadata));
+    if (!metadata) {
+        set_err(err, err_len, "out of memory");
+        return false;
+    }
+    file->metadata = metadata;
+    file->metadata_count = 0;
     for (i = 0; i < metadata_count; i++) {
         const char *key;
         size_t key_len;
         uint32_t type;
+        PgMetadataValue value;
 
-        if (!rd_string(&r, &key, &key_len) || !rd_u32(&r, &type))
+        if (!rd_string(&r, &key, &key_len) || !rd_u32(&r, &type) ||
+            !gguf_read_value(&r, type, &value))
             return false;
-        if (key_len == 17 && memcmp(key, "general.alignment", 17) == 0 && type == 4) {
-            if (!rd_u32(&r, &alignment))
-                return false;
-            if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
-                set_err(err, err_len, "invalid GGUF alignment %u", alignment);
+        metadata[i].key.data = key;
+        metadata[i].key.len = key_len;
+        metadata[i].value = value;
+        file->metadata_count = (size_t)i + 1;
+
+        if (key_len == 17 && memcmp(key, "general.alignment", 17) == 0) {
+            uint64_t align64;
+
+            if (!metadata_value_as_u64(&value, &align64) ||
+                align64 == 0 || align64 > UINT32_MAX ||
+                (align64 & (align64 - 1)) != 0) {
+                set_err(err, err_len, "invalid GGUF alignment");
                 return false;
             }
-            continue;
+            alignment = (uint32_t)align64;
         }
-        if (!gguf_skip_value(&r, type, 0))
-            return false;
     }
 
     tensors = calloc((size_t)tensor_count ? (size_t)tensor_count : 1, sizeof(*tensors));
@@ -933,6 +1183,7 @@ void pg_model_file_free(PgModelFile *file)
 {
     if (!file)
         return;
+    metadata_free(file);
     free(file->tensors);
     pg_file_map_close(&file->map);
     free(file);
@@ -941,6 +1192,33 @@ void pg_model_file_free(PgModelFile *file)
 PgModelFormat pg_model_file_format(const PgModelFile *file)
 {
     return file ? file->format : PG_MODEL_FORMAT_UNKNOWN;
+}
+
+size_t pg_model_file_metadata_count(const PgModelFile *file)
+{
+    return file ? file->metadata_count : 0;
+}
+
+const PgMetadataEntry *pg_model_file_metadata(const PgModelFile *file, size_t idx)
+{
+    if (!file || idx >= file->metadata_count)
+        return NULL;
+    return &file->metadata[idx];
+}
+
+const PgMetadataEntry *pg_model_file_find_metadata(const PgModelFile *file,
+                                                   const char *key, size_t key_len)
+{
+    size_t i;
+
+    if (!file || !key)
+        return NULL;
+    for (i = 0; i < file->metadata_count; i++) {
+        const PgMetadataEntry *entry = &file->metadata[i];
+        if (entry->key.len == key_len && memcmp(entry->key.data, key, key_len) == 0)
+            return entry;
+    }
+    return NULL;
 }
 
 size_t pg_model_file_tensor_count(const PgModelFile *file)
@@ -975,6 +1253,19 @@ const char *pg_model_format_name(PgModelFormat format)
     switch (format) {
     case PG_MODEL_FORMAT_GGUF: return "gguf";
     case PG_MODEL_FORMAT_SAFETENSORS: return "safetensors";
+    default: return "unknown";
+    }
+}
+
+const char *pg_metadata_type_name(PgMetadataType type)
+{
+    switch (type) {
+    case PG_METADATA_TYPE_U64: return "u64";
+    case PG_METADATA_TYPE_I64: return "i64";
+    case PG_METADATA_TYPE_F64: return "f64";
+    case PG_METADATA_TYPE_BOOL: return "bool";
+    case PG_METADATA_TYPE_STRING: return "string";
+    case PG_METADATA_TYPE_ARRAY: return "array";
     default: return "unknown";
     }
 }
@@ -1022,4 +1313,71 @@ size_t pg_tensor_type_size(PgTensorType type)
     default:
         return 0;
     }
+}
+
+int pg_metadata_as_u64(const PgMetadataValue *value, uint64_t *out)
+{
+    if (!value || !out)
+        return -1;
+    if (value->type == PG_METADATA_TYPE_U64) {
+        *out = value->as.u64;
+        return 0;
+    }
+    if (value->type == PG_METADATA_TYPE_I64 && value->as.i64 >= 0) {
+        *out = (uint64_t)value->as.i64;
+        return 0;
+    }
+    return -1;
+}
+
+int pg_metadata_as_i64(const PgMetadataValue *value, int64_t *out)
+{
+    if (!value || !out)
+        return -1;
+    if (value->type == PG_METADATA_TYPE_I64) {
+        *out = value->as.i64;
+        return 0;
+    }
+    if (value->type == PG_METADATA_TYPE_U64 && value->as.u64 <= INT64_MAX) {
+        *out = (int64_t)value->as.u64;
+        return 0;
+    }
+    return -1;
+}
+
+int pg_metadata_as_f64(const PgMetadataValue *value, double *out)
+{
+    if (!value || !out)
+        return -1;
+    if (value->type == PG_METADATA_TYPE_F64) {
+        *out = value->as.f64;
+        return 0;
+    }
+    if (value->type == PG_METADATA_TYPE_U64) {
+        *out = (double)value->as.u64;
+        return 0;
+    }
+    if (value->type == PG_METADATA_TYPE_I64) {
+        *out = (double)value->as.i64;
+        return 0;
+    }
+    return -1;
+}
+
+int pg_metadata_as_string(const PgMetadataValue *value, PgStringView *out)
+{
+    if (!value || !out || value->type != PG_METADATA_TYPE_STRING)
+        return -1;
+    *out = value->as.string;
+    return 0;
+}
+
+int pg_metadata_array_string(const PgMetadataValue *value, size_t idx,
+                             PgStringView *out)
+{
+    if (!value || !out || value->type != PG_METADATA_TYPE_ARRAY ||
+        value->elem_type != PG_METADATA_TYPE_STRING || idx >= value->count)
+        return -1;
+    *out = value->as.string_array[idx];
+    return 0;
 }
