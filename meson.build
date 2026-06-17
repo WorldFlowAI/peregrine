@@ -40,6 +40,8 @@ c_sources = files(
   'src/util/cpu.c',
   'src/util/thread.c',
   'src/util/mem.c',
+  'src/util/filemap.c',
+  'src/model/model_file.c',
   'src/tensor/kernels/dot/dot_ref.c',
   'src/tensor/kernels/dot/dot_init.c',
   'src/tensor/kernels/axpy/axpy_ref.c',

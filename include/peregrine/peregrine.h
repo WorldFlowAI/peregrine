@@ -9,6 +9,7 @@
 #define PEREGRINE_H
 
 #include <stddef.h>
+#include "peregrine/model.h"
 #include "peregrine/version.h"
 
 #ifdef __cplusplus

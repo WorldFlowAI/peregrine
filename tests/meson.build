@@ -31,4 +31,10 @@ checkasm = executable('checkasm',
 # Correctness fuzzing is the gate wired into `meson test` / `ninja test`.
 test('checkasm', checkasm)
 
+model_file_test = executable('test_model_file',
+  'test_model_file.c',
+  dependencies : peregrine_dep)
+
+test('model_file', model_file_test)
+
 # Benchmarks are opt-in (slow); run manually with: build/tests/checkasm --bench
