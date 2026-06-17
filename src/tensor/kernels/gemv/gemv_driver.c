@@ -9,6 +9,9 @@
 
 #include "util/thread.h"
 
+#define PG_GEMV_PAR_MIN_M 1024
+#define PG_GEMV_PAR_GRAIN 128
+
 typedef struct {
     size_t        K, lda;
     const float  *A;
@@ -28,5 +31,9 @@ void pg_sgemv_driver(size_t M, size_t K, const float *A, size_t lda,
                      const float *x, float *y, pg_dot_f32_fn dot)
 {
     GemvJob job = { K, lda, A, x, y, dot };
-    pg_parallel_for(pg_global_threadpool(), M, 32, gemv_task, &job);
+    if (M < PG_GEMV_PAR_MIN_M) {
+        gemv_task(&job, 0, M);
+        return;
+    }
+    pg_parallel_for(pg_global_threadpool(), M, PG_GEMV_PAR_GRAIN, gemv_task, &job);
 }

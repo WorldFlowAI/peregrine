@@ -38,4 +38,8 @@ void pg_parallel_for(PgThreadPool *pool, size_t n, size_t grain,
  * lives for the process). Returns NULL if creation failed. */
 PgThreadPool *pg_global_threadpool(void);
 
+/* Configure the process-wide pool before first use. n_threads <= 0 selects the
+ * online CPU count. Returns -1 if the pool already exists. */
+int pg_global_threadpool_configure(int n_threads);
+
 #endif /* PEREGRINE_UTIL_THREAD_H */

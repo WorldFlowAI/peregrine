@@ -8,12 +8,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "peregrine/llama.h"
 #include "peregrine/model.h"
 #include "peregrine/tokenizer.h"
 #include "peregrine/version.h"
 #include "util/cpu.h"
+#include "util/thread.h"
 
 static int cmd_info(void)
 {
@@ -114,6 +116,14 @@ static int parse_float_arg(const char *s, float *out)
         return -1;
     *out = (float)v;
     return 0;
+}
+
+static double now_sec(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1.0e-9;
 }
 
 static void print_escaped(const char *s, size_t n)
@@ -358,6 +368,217 @@ done:
     return rc;
 }
 
+static int eval_prompt_tokens(PgLlamaContext *ctx, const PgTokenBuffer *tokens,
+                              const float **logits, char *err, size_t err_len)
+{
+    size_t i;
+
+    for (i = 0; i < tokens->count; i++) {
+        if (pg_llama_eval_token(ctx, tokens->data[i], logits, err, err_len) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+static int eval_decode_tokens(PgLlamaContext *ctx, const PgLlamaModel *model,
+                              size_t n_predict, int32_t fixed_token,
+                              const float **logits, char *err, size_t err_len)
+{
+    size_t i;
+
+    for (i = 0; i < n_predict; i++) {
+        int32_t next = fixed_token;
+
+        if (next < 0) {
+            next = pg_llama_sample_greedy(*logits,
+                                          pg_llama_model_vocab_size(model));
+            if (next < 0) {
+                snprintf(err, err_len, "failed to sample next token");
+                return -1;
+            }
+        }
+        if (pg_llama_eval_token(ctx, next, logits, err, err_len) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+static int cmd_bench(int argc, char **argv)
+{
+    const char *path = NULL;
+    const char *prompt = NULL;
+    size_t n_predict = 128;
+    size_t repeat = 5;
+    size_t threads = 0;
+    int32_t fixed_token = -1;
+    int warmup = 1;
+    PgLlamaModel *model = NULL;
+    PgLlamaContext *ctx = NULL;
+    const PgTokenizer *tok;
+    PgTokenBuffer prompt_tokens = { 0 };
+    const float *logits = NULL;
+    char err[256];
+    double load_sec;
+    double tokenize_sec;
+    double prompt_total = 0.0;
+    double decode_total = 0.0;
+    double t0;
+    size_t i;
+    int rc = 1;
+
+    for (i = 2; i < (size_t)argc; i++) {
+        if (!strcmp(argv[i], "-m") && i + 1 < (size_t)argc) {
+            path = argv[++i];
+        } else if (!strcmp(argv[i], "-p") && i + 1 < (size_t)argc) {
+            prompt = argv[++i];
+        } else if (!strcmp(argv[i], "-n") && i + 1 < (size_t)argc) {
+            if (parse_size_arg(argv[++i], &n_predict) != 0) {
+                fprintf(stderr, "peregrine: invalid -n value\n");
+                return 2;
+            }
+        } else if ((!strcmp(argv[i], "-r") || !strcmp(argv[i], "--repeat")) &&
+                   i + 1 < (size_t)argc) {
+            if (parse_size_arg(argv[++i], &repeat) != 0 || repeat == 0) {
+                fprintf(stderr, "peregrine: invalid repeat value\n");
+                return 2;
+            }
+        } else if (!strcmp(argv[i], "--threads") && i + 1 < (size_t)argc) {
+            if (parse_size_arg(argv[++i], &threads) != 0 || threads > 1024) {
+                fprintf(stderr, "peregrine: invalid thread count\n");
+                return 2;
+            }
+        } else if (!strcmp(argv[i], "--fixed-token") && i + 1 < (size_t)argc) {
+            size_t token;
+
+            if (parse_size_arg(argv[++i], &token) != 0 || token > (size_t)INT32_MAX) {
+                fprintf(stderr, "peregrine: invalid fixed token\n");
+                return 2;
+            }
+            fixed_token = (int32_t)token;
+        } else if (!strcmp(argv[i], "--no-warmup")) {
+            warmup = 0;
+        } else {
+            fprintf(stderr,
+                    "usage: %s bench -m <model.gguf> -p <prompt> [-n tokens] [-r repeat] [--threads n] [--fixed-token id] [--no-warmup]\n",
+                    argv[0]);
+            return 2;
+        }
+    }
+    if (!path || !prompt) {
+        fprintf(stderr,
+                "usage: %s bench -m <model.gguf> -p <prompt> [-n tokens] [-r repeat] [--threads n] [--fixed-token id] [--no-warmup]\n",
+                argv[0]);
+        return 2;
+    }
+    if (threads > 0 &&
+        pg_global_threadpool_configure((int)threads) != 0) {
+        fprintf(stderr, "peregrine: thread pool already initialized\n");
+        return 2;
+    }
+
+    t0 = now_sec();
+    model = pg_llama_model_load(path, err, sizeof(err));
+    load_sec = now_sec() - t0;
+    if (!model) {
+        fprintf(stderr, "peregrine: %s\n", err);
+        goto done;
+    }
+
+    tok = pg_llama_model_tokenizer(model);
+    t0 = now_sec();
+    if (pg_tokenizer_encode(tok, prompt, 1, 0, &prompt_tokens) != 0 ||
+        prompt_tokens.count == 0) {
+        fprintf(stderr, "peregrine: failed to tokenize prompt\n");
+        goto done;
+    }
+    tokenize_sec = now_sec() - t0;
+    if (prompt_tokens.count + n_predict > pg_llama_model_context_length(model)) {
+        fprintf(stderr, "peregrine: benchmark exceeds model context length\n");
+        goto done;
+    }
+    if (fixed_token >= 0 && (size_t)fixed_token >= pg_llama_model_vocab_size(model)) {
+        fprintf(stderr, "peregrine: fixed token out of range\n");
+        goto done;
+    }
+
+    if (warmup) {
+        ctx = pg_llama_context_new(model, 0, err, sizeof(err));
+        if (!ctx) {
+            fprintf(stderr, "peregrine: %s\n", err);
+            goto done;
+        }
+        if (eval_prompt_tokens(ctx, &prompt_tokens, &logits, err, sizeof(err)) != 0 ||
+            eval_decode_tokens(ctx, model, n_predict, fixed_token,
+                               &logits, err, sizeof(err)) != 0) {
+            fprintf(stderr, "peregrine: %s\n", err);
+            goto done;
+        }
+        pg_llama_context_free(ctx);
+        ctx = NULL;
+    }
+
+    for (i = 0; i < repeat; i++) {
+        double prompt_sec;
+        double decode_sec;
+
+        ctx = pg_llama_context_new(model, 0, err, sizeof(err));
+        if (!ctx) {
+            fprintf(stderr, "peregrine: %s\n", err);
+            goto done;
+        }
+
+        t0 = now_sec();
+        if (eval_prompt_tokens(ctx, &prompt_tokens, &logits, err, sizeof(err)) != 0) {
+            fprintf(stderr, "peregrine: %s\n", err);
+            goto done;
+        }
+        prompt_sec = now_sec() - t0;
+
+        t0 = now_sec();
+        if (eval_decode_tokens(ctx, model, n_predict, fixed_token,
+                               &logits, err, sizeof(err)) != 0) {
+            fprintf(stderr, "peregrine: %s\n", err);
+            goto done;
+        }
+        decode_sec = now_sec() - t0;
+
+        prompt_total += prompt_sec;
+        decode_total += decode_sec;
+        pg_llama_context_free(ctx);
+        ctx = NULL;
+    }
+
+    {
+        PgThreadPool *pool = pg_global_threadpool();
+        double prompt_avg = prompt_total / (double)repeat;
+        double decode_avg = decode_total / (double)repeat;
+        double prompt_tps = prompt_avg > 0.0 ?
+                            (double)prompt_tokens.count / prompt_avg : 0.0;
+        double decode_tps = decode_avg > 0.0 ?
+                            (double)n_predict / decode_avg : 0.0;
+
+        printf("model: %s\n", path);
+        printf("threads: %d\n", pg_threadpool_size(pool));
+        printf("prompt_tokens: %zu\n", prompt_tokens.count);
+        printf("decode_tokens: %zu\n", n_predict);
+        printf("decode_mode: %s\n", fixed_token >= 0 ? "fixed" : "greedy");
+        printf("repeat: %zu\n", repeat);
+        printf("load_sec: %.6f\n", load_sec);
+        printf("tokenize_sec: %.6f\n", tokenize_sec);
+        printf("prompt_eval_sec_avg: %.6f\n", prompt_avg);
+        printf("prompt_eval_tok_s: %.2f\n", prompt_tps);
+        printf("decode_sec_avg: %.6f\n", decode_avg);
+        printf("decode_tok_s: %.2f\n", decode_tps);
+    }
+    rc = 0;
+
+done:
+    pg_llama_context_free(ctx);
+    pg_token_buffer_free(&prompt_tokens);
+    pg_llama_model_free(model);
+    return rc;
+}
+
 static int cmd_run(int argc, char **argv)
 {
     const char *path = NULL;
@@ -494,8 +715,9 @@ static int usage(const char *argv0)
         "  %s inspect -m <model>            show model tensor directory\n"
         "  %s tokenize -m <model> -p <txt>  print tokenizer token IDs\n"
         "  %s logits -m <model> -p <txt>    print top logits after prompt\n"
+        "  %s bench -m <model> -p <txt>     benchmark prompt/decode eval\n"
         "  %s run -m <model.gguf> -p <txt>  run f32 GGUF inference\n",
-        PEREGRINE_VERSION_STRING, argv0, argv0, argv0, argv0, argv0);
+        PEREGRINE_VERSION_STRING, argv0, argv0, argv0, argv0, argv0, argv0);
     return 2;
 }
 
@@ -511,6 +733,8 @@ int main(int argc, char **argv)
         return cmd_tokenize(argc, argv);
     if (!strcmp(argv[1], "logits"))
         return cmd_logits(argc, argv);
+    if (!strcmp(argv[1], "bench"))
+        return cmd_bench(argc, argv);
     if (!strcmp(argv[1], "run"))
         return cmd_run(argc, argv);
     return usage(argv[0]);
