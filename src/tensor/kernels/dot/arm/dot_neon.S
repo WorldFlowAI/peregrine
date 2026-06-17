@@ -14,6 +14,12 @@
 #include "ext/arm/asm.S"
 
 function dot_f32_neon, export=1
+    cmp     x2, #512
+    b.eq    5f
+    mov     x3, #1376
+    cmp     x2, x3
+    b.eq    6f
+
     movi    v0.16b, #0              // acc0
     movi    v1.16b, #0             // acc1
     movi    v2.16b, #0            // acc2
@@ -46,5 +52,46 @@ function dot_f32_neon, export=1
     subs    x2, x2, #1
     b.ne    3b
 4:
+    ret
+
+5:
+    mov     x3, #16
+    b       7f
+6:
+    mov     x3, #43
+7:
+    movi    v0.16b, #0
+    movi    v1.16b, #0
+    movi    v2.16b, #0
+    movi    v3.16b, #0
+    movi    v4.16b, #0
+    movi    v5.16b, #0
+    movi    v6.16b, #0
+    movi    v7.16b, #0
+8:
+    ld1     {v16.4s, v17.4s, v18.4s, v19.4s}, [x0], #64
+    ld1     {v20.4s, v21.4s, v22.4s, v23.4s}, [x0], #64
+    ld1     {v24.4s, v25.4s, v26.4s, v27.4s}, [x1], #64
+    ld1     {v28.4s, v29.4s, v30.4s, v31.4s}, [x1], #64
+    fmla    v0.4s, v16.4s, v24.4s
+    fmla    v1.4s, v17.4s, v25.4s
+    fmla    v2.4s, v18.4s, v26.4s
+    fmla    v3.4s, v19.4s, v27.4s
+    fmla    v4.4s, v20.4s, v28.4s
+    fmla    v5.4s, v21.4s, v29.4s
+    fmla    v6.4s, v22.4s, v30.4s
+    fmla    v7.4s, v23.4s, v31.4s
+    subs    x3, x3, #1
+    b.ne    8b
+
+    fadd    v0.4s, v0.4s, v1.4s
+    fadd    v2.4s, v2.4s, v3.4s
+    fadd    v4.4s, v4.4s, v5.4s
+    fadd    v6.4s, v6.4s, v7.4s
+    fadd    v0.4s, v0.4s, v2.4s
+    fadd    v4.4s, v4.4s, v6.4s
+    fadd    v0.4s, v0.4s, v4.4s
+    faddp   v0.4s, v0.4s, v0.4s
+    faddp   v0.4s, v0.4s, v0.4s
     ret
 endfunc

@@ -57,6 +57,7 @@ static void fuzz_variant(const PgDotVariant *v, float *a, float *b)
     static const size_t edges[] = {
         0, 1, 2, 3, 7, 8, 9, 15, 16, 17, 31, 32, 33,
         63, 64, 65, 127, 128, 129, 255, 256, 257,
+        512, 1376,
     };
     const float mags[] = { 0.5f, 1.0f, 10.0f, 100.0f };
     int ok = 1;
@@ -137,7 +138,7 @@ void checkasm_check_dot(void)
             fuzz_variant(&v[i], a, b);
 
     if (checkasm_bench_enabled()) {
-        static const size_t sizes[] = { 4096, 65536, 1u << 20 };
+        static const size_t sizes[] = { 512, 1376, 4096, 65536, 1u << 20 };
         for (size_t s = 0; s < sizeof sizes / sizeof sizes[0]; s++) {
             size_t n = sizes[s];
             float *ba = alloc_buf(n);

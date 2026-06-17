@@ -19,7 +19,7 @@
 #include "tensor/kernels/gemv/gemv.h"
 
 #define MAXM 512
-#define MAXK 512
+#define MAXK 1376
 #define LDA  (MAXK + 5)
 
 static float *fbuf(size_t n)
@@ -31,13 +31,20 @@ static float *fbuf(size_t n)
 
 static void fuzz_variant(const PgGemvVariant *v, float *A, float *x, float *y)
 {
-    static const size_t edges[] = { 0, 1, 2, 3, 7, 8, 9, 15, 16, 17, 31, 33, 64 };
+    static const struct {
+        size_t M, K;
+    } edges[] = {
+        { 0, 0 }, { 1, 1 }, { 2, 2 }, { 3, 3 }, { 7, 7 },
+        { 8, 8 }, { 9, 9 }, { 15, 15 }, { 16, 16 }, { 17, 17 },
+        { 31, 31 }, { 33, 33 }, { 64, 64 }, { 512, 512 },
+        { 512, 1376 },
+    };
     const size_t ne = sizeof edges / sizeof edges[0];
     int ok = 1;
 
     for (int t = 0; t < 300 && ok; t++) {
-        size_t M = (t < (int)ne) ? edges[t] : checkasm_rand_range(1, MAXM);
-        size_t K = (t < (int)ne) ? edges[t] : checkasm_rand_range(1, MAXK);
+        size_t M = (t < (int)ne) ? edges[t].M : checkasm_rand_range(1, MAXM);
+        size_t K = (t < (int)ne) ? edges[t].K : checkasm_rand_range(1, MAXK);
 
         for (size_t i = 0; i < M; i++)
             for (size_t k = 0; k < K; k++) A[i * LDA + k] = checkasm_randf(2.0f);
@@ -96,18 +103,28 @@ void checkasm_check_gemv(void)
             fuzz_variant(&v[i], A, x, y);
 
     if (checkasm_bench_enabled()) {
-        static const size_t dims[] = { 1024, 4096, 8192 };
+        static const struct {
+            size_t M, K;
+        } dims[] = {
+            { 512, 512 },
+            { 512, 1376 },
+            { 1376, 512 },
+            { 32000, 512 },
+            { 4096, 4096 },
+            { 8192, 8192 },
+        };
         for (size_t s = 0; s < sizeof dims / sizeof dims[0]; s++) {
-            size_t n = dims[s];
-            float *bA = fbuf(n * n), *bx = fbuf(n), *by = fbuf(n);
-            for (size_t k = 0; k < n * n; k++) bA[k] = checkasm_randf(1.0f);
-            for (size_t k = 0; k < n; k++) bx[k] = checkasm_randf(1.0f);
+            size_t M = dims[s].M;
+            size_t K = dims[s].K;
+            float *bA = fbuf(M * K), *bx = fbuf(K), *by = fbuf(M);
+            for (size_t k = 0; k < M * K; k++) bA[k] = checkasm_randf(1.0f);
+            for (size_t k = 0; k < K; k++) bx[k] = checkasm_randf(1.0f);
             char title[48];
-            snprintf(title, sizeof title, "sgemv_f32  %zux%zu", n, n);
+            snprintf(title, sizeof title, "sgemv_f32  %zux%zu", M, K);
             checkasm_bench_begin(title, "GFLOP/s");
             for (size_t i = 0; i < nv; i++) {
                 if ((flags & v[i].req_flags) != v[i].req_flags) continue;
-                double g, per = bench_variant(v[i].fn, bA, bx, by, n, n, &g);
+                double g, per = bench_variant(v[i].fn, bA, bx, by, M, K, &g);
                 checkasm_bench_row(v[i].name, per, g);
             }
             checkasm_bench_end();
