@@ -1,13 +1,17 @@
 name: ci
 
-# Build + checkasm across both architectures and, via emulation, across ISA
-# extension levels the runner hardware may not have:
-#   x86-64 : native, then Intel SDE forcing SSE/AVX2/AVX-512 paths
+# Build + checkasm across both architectures and, where emulation is accurate,
+# across ISA extension levels the runner hardware may not have:
+#   x86-64 : native, QEMU-forced AVX2, and optional SDE-forced AVX512-BF16
 #   arm64  : native NEON, then QEMU forcing other -cpu feature sets (e.g. SVE2)
 #
 # The kernel dispatch auto-selects the best ISA the (real or emulated) CPU
 # reports, so as SSE2 / AVX-512 / SVE2 kernels land they are exercised here
 # automatically with no workflow changes.
+#
+# QEMU TCG does not currently execute AVX-512/BF16 on GitHub-hosted runners; set
+# repository variable PEREGRINE_SDE_TAR_URL, plus optional PEREGRINE_SDE_SHA256,
+# to make the AVX512-BF16 checkasm path a hard Intel SDE gate.
 
 on:
   push:
@@ -20,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
-        run: sudo apt-get update && sudo apt-get install -y meson ninja-build nasm
+        run: sudo apt-get update && sudo apt-get install -y meson ninja-build nasm qemu-user
       - name: Build
         run: |
           meson setup build
@@ -29,28 +33,109 @@ jobs:
         run: meson test -C build --print-errorlogs
       - name: checkasm --bench (native, informational)
         run: ./build/tests/checkasm --bench --seed=0x1
-      - name: checkasm under Intel SDE (forced ISA levels, best-effort)
+      - name: checkasm under QEMU (forced x86 AVX2 levels)
+        shell: bash
         run: |
-          set -u
-          # Intel SDE runs the x86 binary as if on Penryn / Haswell / Skylake-X /
-          # Sapphire Rapids, which exercises the SSE4 / AVX2 / AVX-512 paths as
-          # kernels add them. The SDE download is license-gated and its URL id
-          # rotates, so this step is best-effort: if it can't be fetched it skips
-          # without failing the job (the native AVX2 run above already covers
-          # today's kernels). Update SDE_VER / SDE_ID when a new SDE ships.
-          SDE_VER=9.53.0-2025-03-16
-          SDE_ID=843185
-          url="https://downloadmirror.intel.com/${SDE_ID}/sde-external-${SDE_VER}-lin.tar.xz"
-          if ! curl -fsSL -o sde.tar.xz "$url" || ! tar xf sde.tar.xz 2>/dev/null; then
-            echo "::notice::Intel SDE unavailable (fetch/extract failed for ${url}); skipping ISA emulation."
-            exit 0
-          fi
-          SDE="$(pwd)/sde-external-${SDE_VER}-lin/sde64"
-          for isa in -p4p -hsw -skx -spr; do   # SSE4, AVX2, AVX-512 (SKX), AVX-512 (SPR)
-            echo "::group::SDE $isa"
-            "$SDE" "$isa" -- ./build/tests/checkasm --seed=0x1234abcd
+          set -euo pipefail
+
+          avx2_variants=(
+            dot_f32.avx2
+            axpy_f32.avx2
+            rmsnorm_f32.avx2
+            sum_f32.avx2
+            max_f32.avx2
+            mul_f32.avx2
+            add_f32.avx2
+            silu_f32.avx2
+            gelu_f32.avx2
+            softmax_f32.avx2
+            exp_f32.avx2
+            sgemm_f32.avx2
+            sgemv_f32.avx2
+            bf16gemm.avx2
+            fp16gemm.avx2
+          )
+
+          run_qemu() {
+            local label="$1"
+            local cpu="$2"
+            shift 2
+            local log="checkasm-${label}.log"
+
+            echo "::group::qemu-x86_64 -cpu ${cpu}"
+            qemu-x86_64 -cpu "$cpu" ./build/tests/checkasm --seed=0x1234abcd | tee "$log"
+
+            local expected
+            for expected in "$@"; do
+              if ! grep -Fq "  [ok] ${expected}" "$log"; then
+                echo "::error::${label}: missing expected checkasm variant '${expected}'"
+                exit 1
+              fi
+            done
             echo "::endgroup::"
+          }
+
+          run_qemu haswell-avx2 Haswell-v4 "${avx2_variants[@]}"
+
+          run_qemu skylake-avx512-no-bf16 Skylake-Server-v5 "${avx2_variants[@]}"
+          if grep -Fq "  [ok] bf16gemm.avx512bf16" checkasm-skylake-avx512-no-bf16.log; then
+            echo "::error::Skylake-Server-v5 unexpectedly exposed AVX512-BF16"
+            exit 1
+          fi
+
+      - name: checkasm under Intel SDE (forced AVX512-BF16)
+        if: ${{ vars.PEREGRINE_SDE_TAR_URL != '' }}
+        shell: bash
+        env:
+          PEREGRINE_SDE_TAR_URL: ${{ vars.PEREGRINE_SDE_TAR_URL }}
+          PEREGRINE_SDE_SHA256: ${{ vars.PEREGRINE_SDE_SHA256 }}
+        run: |
+          set -euo pipefail
+
+          curl -fsSL --retry 3 -o sde.tar.xz "$PEREGRINE_SDE_TAR_URL"
+          if [ -n "${PEREGRINE_SDE_SHA256}" ]; then
+            echo "${PEREGRINE_SDE_SHA256}  sde.tar.xz" | sha256sum -c -
+          fi
+          tar xf sde.tar.xz
+
+          sde_bin="$(find "$PWD" -maxdepth 3 -type f -name sde64 -print -quit)"
+          if [ -z "$sde_bin" ] || [ ! -x "$sde_bin" ]; then
+            echo "::error::Unable to find executable sde64 in SDE archive"
+            exit 1
+          fi
+
+          "$sde_bin" -spr -- ./build/tests/checkasm --seed=0x1234abcd | tee checkasm-sde-spr.log
+
+          avx2_variants=(
+            dot_f32.avx2
+            axpy_f32.avx2
+            rmsnorm_f32.avx2
+            sum_f32.avx2
+            max_f32.avx2
+            mul_f32.avx2
+            add_f32.avx2
+            silu_f32.avx2
+            gelu_f32.avx2
+            softmax_f32.avx2
+            exp_f32.avx2
+            sgemm_f32.avx2
+            sgemv_f32.avx2
+            bf16gemm.avx2
+            fp16gemm.avx2
+          )
+
+          expected_variants=("${avx2_variants[@]}" bf16gemm.avx512bf16)
+          for expected in "${expected_variants[@]}"; do
+            if ! grep -Fq "  [ok] ${expected}" checkasm-sde-spr.log; then
+              echo "::error::Intel SDE SPR run missing expected checkasm variant '${expected}'"
+              exit 1
+            fi
           done
+
+      - name: AVX512-BF16 CI coverage note
+        if: ${{ vars.PEREGRINE_SDE_TAR_URL == '' }}
+        run: |
+          echo "::warning::AVX512-BF16 checkasm was not run: GitHub-hosted QEMU TCG does not execute AVX-512/BF16. Configure PEREGRINE_SDE_TAR_URL/PEREGRINE_SDE_SHA256 to make Intel SDE validation a hard gate."
 
   arm64:
     runs-on: ubuntu-24.04-arm
