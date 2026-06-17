@@ -184,11 +184,20 @@ void pg_parallel_for(PgThreadPool *p, size_t n, size_t grain,
 /* ---- process-wide pool -------------------------------------------------- */
 static pthread_once_t  g_once = PTHREAD_ONCE_INIT;
 static PgThreadPool   *g_pool;
+static int             g_requested_threads;
 
-static void make_global_pool(void) { g_pool = pg_threadpool_create(0); }
+static void make_global_pool(void) { g_pool = pg_threadpool_create(g_requested_threads); }
 
 PgThreadPool *pg_global_threadpool(void)
 {
     pthread_once(&g_once, make_global_pool);
     return g_pool;
+}
+
+int pg_global_threadpool_configure(int n_threads)
+{
+    if (g_pool)
+        return -1;
+    g_requested_threads = n_threads;
+    return 0;
 }

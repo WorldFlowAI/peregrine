@@ -49,6 +49,7 @@ jobs:
             silu_f32.avx2
             gelu_f32.avx2
             softmax_f32.avx2
+            rope_f32.avx2
             exp_f32.avx2
             sgemm_f32.avx2
             sgemv_f32.avx2
@@ -117,6 +118,7 @@ jobs:
             silu_f32.avx2
             gelu_f32.avx2
             softmax_f32.avx2
+            rope_f32.avx2
             exp_f32.avx2
             sgemm_f32.avx2
             sgemv_f32.avx2

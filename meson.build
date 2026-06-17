@@ -40,6 +40,10 @@ c_sources = files(
   'src/util/cpu.c',
   'src/util/thread.c',
   'src/util/mem.c',
+  'src/util/filemap.c',
+  'src/model/model_file.c',
+  'src/token/tokenizer.c',
+  'src/runtime/llama.c',
   'src/tensor/kernels/dot/dot_ref.c',
   'src/tensor/kernels/dot/dot_init.c',
   'src/tensor/kernels/axpy/axpy_ref.c',
@@ -90,6 +94,7 @@ if target_x86
     'src/tensor/kernels/silu/x86/silu_avx2.asm',
     'src/tensor/kernels/gelu/x86/gelu_avx2.asm',
     'src/tensor/kernels/softmax/x86/softmax_avx2.asm',
+    'src/tensor/kernels/rope/x86/rope_avx2.asm',
     'src/tensor/kernels/gemm/x86/sgemm_ukernel_avx2.asm',
     'src/tensor/kernels/gemm/gemm_avx2.c',
     'src/tensor/kernels/gemv/gemv_avx2.c',
@@ -135,7 +140,7 @@ peregrine_dep = declare_dependency(
   include_directories : incdir,
   dependencies : [m_dep, threads_dep])
 
-executable('peregrine',
+peregrine_exe = executable('peregrine',
   'src/cli/peregrine.c',
   dependencies : peregrine_dep,
   install : true)

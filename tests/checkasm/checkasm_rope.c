@@ -7,8 +7,7 @@
  * out-of-place exactly.
  *
  * rope's apply has 8 args, more than the clobber-check trampoline forwards, so
- * (being C only for now) we call it directly. When the asm variant lands the
- * trampoline will be extended (or mode split into per-convention entry points).
+ * variants are called directly here.
  */
 #include "checkasm.h"
 

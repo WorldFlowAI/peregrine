@@ -31,4 +31,29 @@ checkasm = executable('checkasm',
 # Correctness fuzzing is the gate wired into `meson test` / `ninja test`.
 test('checkasm', checkasm)
 
+model_file_test = executable('test_model_file',
+  'test_model_file.c',
+  dependencies : peregrine_dep)
+
+test('model_file', model_file_test)
+
+tokenizer_test = executable('test_tokenizer',
+  'test_tokenizer.c',
+  dependencies : peregrine_dep)
+
+test('tokenizer', tokenizer_test)
+
+llama_test = executable('test_llama',
+  'test_llama.c',
+  dependencies : peregrine_dep)
+
+test('llama', llama_test)
+
+python3 = find_program('python3', required : false)
+if python3.found()
+  test('llama_cpp_parity', python3,
+    args : [files('test_llama_cpp_parity.py'), peregrine_exe],
+    timeout : 120)
+endif
+
 # Benchmarks are opt-in (slow); run manually with: build/tests/checkasm --bench

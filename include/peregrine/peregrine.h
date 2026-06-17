@@ -1,14 +1,17 @@
 /*
  * peregrine - public C API (umbrella header)
  *
- * Stable C ABI surface for embedders. v0.1 exposes only capability + version;
- * the model/session API below is the v0.x target sketched in ROADMAP.md and is
- * commented out until implemented so this header always reflects reality.
+ * Stable C ABI surface for embedders. v0.1 exposes CPU capability reporting,
+ * zero-copy model inspection, GGUF tokenization, and the first f32 Llama-class
+ * decode path.
  */
 #ifndef PEREGRINE_H
 #define PEREGRINE_H
 
 #include <stddef.h>
+#include "peregrine/llama.h"
+#include "peregrine/model.h"
+#include "peregrine/tokenizer.h"
 #include "peregrine/version.h"
 
 #ifdef __cplusplus
