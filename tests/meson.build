@@ -23,6 +23,7 @@ checkasm = executable('checkasm',
   'checkasm/checkasm_gemm.c',
   'checkasm/checkasm_gemv.c',
   'checkasm/checkasm_gemm_bf16.c',
+  'checkasm/checkasm_gemm_fp16.c',
   checkasm_asm,
   include_directories : include_directories('checkasm'),
   dependencies : peregrine_dep)

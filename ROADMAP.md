@@ -24,12 +24,18 @@ paths; threadpool + tiled parallel driver.
             throughput is in AMX, not NEON BFMMLA); wins on full-rate-BFMMLA
             server cores. Kept tested/benched; not auto-selected on Apple.
       - [ ] native bf16 on x86 (AVX512-BF16 VDPBF16PS)
-      - [ ] fp16 path
+      - [x] fp16 path — storage path (fp16->f32 pack, reuse f32 microkernel) plus
+            native ARM FEAT_FP16 8x8 FMLA microkernel. Native path accumulates in
+            fp16 lanes and widens to f32 on store; checkasm tolerance scales with
+            K and sum(abs(term)). Auto-selected on FEAT_FP16 after local bench win.
 - [ ] Benchmark vs OpenBLAS / cuBLAS-on-CPU baselines
 
 Measured (Apple Silicon, 12-core): f32 SGEMM 105 GFLOP/s single-core ->
 825 GFLOP/s @ 2048^3 (~31x scalar C). x86 AVX2 paths correctness-validated on CI
 (Intel SDE).
+Current M2 Pro checkasm snapshot @ 1024^3: fp16 native 887.6 GFLOP/s, fp16
+storage path 542.3 GFLOP/s, f32 NEON 583.3 GFLOP/s, bf16 BFMMLA 334.9 GFLOP/s,
+bf16 storage path 520.4 GFLOP/s.
 
 ## M3 — Run a model (the "it works" moment)
 - `model/`: mmap GGUF + safetensors loaders (zero-copy tensor views).

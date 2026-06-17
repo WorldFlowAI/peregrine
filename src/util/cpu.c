@@ -47,12 +47,21 @@ unsigned pg_get_cpu_flags(void)
         if (b & (1u << 5))  flags |= PG_CPU_AVX2;
         if (b & (1u << 16)) flags |= PG_CPU_AVX512;
     }
+    if (__get_cpuid_count(7, 1, &a, &b, &c, &d)) {
+        if (a & (1u << 5))  flags |= PG_CPU_BF16;
+    }
 #elif PG_ARCH_AARCH64
     /* NEON (ASIMD) is mandatory on every AArch64 core. */
     flags |= PG_CPU_NEON;
 #  if defined(__linux__)
     {
+        unsigned long hw = getauxval(AT_HWCAP);
         unsigned long hw2 = getauxval(AT_HWCAP2);
+#    ifdef HWCAP_ASIMDHP
+        if (hw & HWCAP_ASIMDHP) flags |= PG_CPU_FP16;
+#    else
+        (void)hw;
+#    endif
 #    ifdef HWCAP2_SVE2
         if (hw2 & HWCAP2_SVE2) flags |= PG_CPU_SVE2;
 #    endif
@@ -62,6 +71,7 @@ unsigned pg_get_cpu_flags(void)
     }
 #  elif defined(__APPLE__)
     if (pg_sysctl_flag("hw.optional.arm.FEAT_BF16")) flags |= PG_CPU_BF16;
+    if (pg_sysctl_flag("hw.optional.arm.FEAT_FP16")) flags |= PG_CPU_FP16;
 #  endif
 #endif
 
@@ -74,7 +84,7 @@ const char *pg_cpu_flags_str(unsigned flags, char *buf, unsigned buflen)
         { PG_CPU_SSE2, "sse2" }, { PG_CPU_AVX2, "avx2" },
         { PG_CPU_FMA, "fma" },   { PG_CPU_AVX512, "avx512" },
         { PG_CPU_NEON, "neon" }, { PG_CPU_SVE2, "sve2" },
-        { PG_CPU_BF16, "bf16" },
+        { PG_CPU_BF16, "bf16" }, { PG_CPU_FP16, "fp16" },
     };
     unsigned i, off = 0;
     if (!buflen) return buf;

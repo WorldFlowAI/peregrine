@@ -9,7 +9,8 @@ static const PgBf16GemmVariant g_variants[] = {
     { "bfmmla", pg_bf16gemm_bfmmla, PG_CPU_NEON | PG_CPU_BF16 },  /* native bf16 */
     { "neon",   pg_bf16gemm_neon,   PG_CPU_NEON },                /* storage path */
 #elif PG_ARCH_X86_64
-    { "avx2",   pg_bf16gemm_avx2,   PG_CPU_AVX2 | PG_CPU_FMA },
+    { "avx512bf16", pg_bf16gemm_avx512bf16, PG_CPU_AVX512 | PG_CPU_BF16 },
+    { "avx2",       pg_bf16gemm_avx2,       PG_CPU_AVX2 | PG_CPU_FMA },
 #endif
     { "c",      pg_bf16gemm_c,      0 },
 };
@@ -41,6 +42,10 @@ void pg_bf16gemm_dsp_init(PgBf16GemmDSP *dsp, unsigned cpu_flags)
         return;
     }
 #elif PG_ARCH_X86_64
+    if ((cpu_flags & (PG_CPU_AVX512 | PG_CPU_BF16)) == (PG_CPU_AVX512 | PG_CPU_BF16)) {
+        dsp->gemm = pg_bf16gemm_avx512bf16;
+        return;
+    }
     if ((cpu_flags & (PG_CPU_AVX2 | PG_CPU_FMA)) == (PG_CPU_AVX2 | PG_CPU_FMA)) {
         dsp->gemm = pg_bf16gemm_avx2;
         return;

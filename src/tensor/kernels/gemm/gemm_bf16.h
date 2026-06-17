@@ -61,6 +61,10 @@ void pg_bf16gemm_avx2(size_t M, size_t N, size_t K,
                       const pg_bf16 *A, size_t lda,
                       const pg_bf16 *B, size_t ldb,
                       float *C, size_t ldc);
+void pg_bf16gemm_avx512bf16(size_t M, size_t N, size_t K,
+                            const pg_bf16 *A, size_t lda,
+                            const pg_bf16 *B, size_t ldb,
+                            float *C, size_t ldc);
 #endif
 
 /* bf16->f32 pack/scalar callbacks for the generic GEMM core (shared by the
