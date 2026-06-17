@@ -21,6 +21,7 @@ C_SRC := \
   src/util/thread.c \
   src/model/model_file.c \
   src/token/tokenizer.c \
+  src/runtime/llama.c \
   src/tensor/kernels/dot/dot_ref.c \
   src/tensor/kernels/dot/dot_init.c \
   src/tensor/kernels/axpy/axpy_ref.c \
@@ -108,6 +109,7 @@ ifeq ($(UNAME_M),x86_64)
     src/tensor/kernels/silu/x86/silu_avx2.o \
     src/tensor/kernels/gelu/x86/gelu_avx2.o \
     src/tensor/kernels/softmax/x86/softmax_avx2.o \
+    src/tensor/kernels/rope/x86/rope_avx2.o \
     src/tensor/kernels/gemm/gemm_avx2.o \
     src/tensor/kernels/gemm/x86/sgemm_ukernel_avx2.o \
     src/tensor/kernels/gemv/gemv_avx2.o \

@@ -43,4 +43,10 @@ tokenizer_test = executable('test_tokenizer',
 
 test('tokenizer', tokenizer_test)
 
+llama_test = executable('test_llama',
+  'test_llama.c',
+  dependencies : peregrine_dep)
+
+test('llama', llama_test)
+
 # Benchmarks are opt-in (slow); run manually with: build/tests/checkasm --bench
