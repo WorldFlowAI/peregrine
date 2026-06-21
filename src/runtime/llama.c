@@ -1,5 +1,5 @@
 /*
- * peregrine - f32 GGUF Llama-class decoder
+ * peregrine - GGUF Llama-class decoder
  */
 #include "peregrine/llama.h"
 
@@ -7,8 +7,10 @@
 #include "tensor/kernels/add/add.h"
 #include "tensor/kernels/axpy/axpy.h"
 #include "tensor/kernels/dot/dot.h"
+#include "tensor/kernels/fp16/fp16.h"
 #include "tensor/kernels/gemv/gemv.h"
 #include "tensor/kernels/mul/mul.h"
+#include "tensor/kernels/qgemv/qgemv.h"
 #include "tensor/kernels/rmsnorm/rmsnorm.h"
 #include "tensor/kernels/rope/rope.h"
 #include "tensor/kernels/silu/silu.h"
@@ -27,22 +29,30 @@
 #define PG_LLAMA_QKV_GRAIN 256
 #define PG_LLAMA_FFN_GATE_UP_GRAIN 128
 
-typedef struct PgMatF32 {
-    const float *data;
+typedef enum PgMatType {
+    PG_MAT_F32 = 0,
+    PG_MAT_Q8_0,
+    PG_MAT_Q4_K,
+} PgMatType;
+
+typedef struct PgMat {
+    const void *data;
     size_t rows;
     size_t cols;
-} PgMatF32;
+    size_t stride;
+    PgMatType type;
+} PgMat;
 
 typedef struct PgLlamaLayer {
     const float *attn_norm;
     const float *ffn_norm;
-    PgMatF32 q;
-    PgMatF32 k;
-    PgMatF32 v;
-    PgMatF32 o;
-    PgMatF32 gate;
-    PgMatF32 down;
-    PgMatF32 up;
+    PgMat q;
+    PgMat k;
+    PgMat v;
+    PgMat o;
+    PgMat gate;
+    PgMat down;
+    PgMat up;
 } PgLlamaLayer;
 
 struct PgLlamaModel {
@@ -50,9 +60,9 @@ struct PgLlamaModel {
     PgTokenizer *tokenizer;
     PgLlamaLayer *layers;
 
-    const float *token_embd;
+    PgMat token_embd;
     const float *output_norm;
-    PgMatF32 output;
+    PgMat output;
 
     size_t vocab;
     size_t context_length;
@@ -67,6 +77,8 @@ struct PgLlamaModel {
     float rope_theta;
 
     PgGemvDSP gemv;
+    PgQgemvDSP qgemv;
+    PgFp16DSP fp16;
     PgDotDSP dot;
     PgAxpyDSP axpy;
     PgRmsnormDSP rmsnorm;
@@ -84,8 +96,8 @@ struct PgLlamaContext {
     int profile_enabled;
     PgLlamaProfile profile;
 
-    float *key_cache;
-    float *value_cache;
+    pg_fp16 *key_cache;
+    pg_fp16 *value_cache;
 
     float *x;
     float *norm;
@@ -99,6 +111,8 @@ struct PgLlamaContext {
     float *ff_hidden;
     float *scores;
     float *probs;
+    float *key_head;
+    float *value_head;
     float *cos;
     float *sin;
     float *logits;
@@ -119,8 +133,8 @@ struct PgSampler {
 
 typedef struct PgGemvPairJob {
     const PgLlamaModel *model;
-    const PgMatF32 *a;
-    const PgMatF32 *b;
+    const PgMat *a;
+    const PgMat *b;
     const float *x;
     float *ya;
     float *yb;
@@ -128,9 +142,9 @@ typedef struct PgGemvPairJob {
 
 typedef struct PgGemvTripleJob {
     const PgLlamaModel *model;
-    const PgMatF32 *a;
-    const PgMatF32 *b;
-    const PgMatF32 *c;
+    const PgMat *a;
+    const PgMat *b;
+    const PgMat *c;
     const float *x;
     float *ya;
     float *yb;
@@ -139,7 +153,7 @@ typedef struct PgGemvTripleJob {
 
 typedef struct PgGemvAddJob {
     const PgLlamaModel *model;
-    const PgMatF32 *a;
+    const PgMat *a;
     const float *x;
     float *y;
 } PgGemvAddJob;
@@ -251,10 +265,38 @@ static int tensor_is_f32_vec(const PgTensorView *t, size_t n)
            t->dims[0] == n;
 }
 
-static int tensor_is_f32_mat(const PgTensorView *t, size_t rows, size_t cols)
+static int tensor_mat_stride(const PgTensorView *t, size_t rows, size_t cols,
+                             PgMatType *type, size_t *stride)
 {
-    return t && t->type == PG_TENSOR_TYPE_F32 && t->n_dims == 2 &&
-           t->dims[0] == cols && t->dims[1] == rows;
+    size_t rb;
+    size_t expected;
+
+    if (!t || t->n_dims != 2 || t->dims[0] != cols || t->dims[1] != rows)
+        return 0;
+    switch (t->type) {
+    case PG_TENSOR_TYPE_F32:
+        *type = PG_MAT_F32;
+        *stride = cols;
+        return 1;
+    case PG_TENSOR_TYPE_Q8_0:
+        rb = pg_q8_0_row_bytes(cols);
+        if (!rb || !checked_mul_size(rows, rb, &expected) ||
+            t->nbytes != expected)
+            return 0;
+        *type = PG_MAT_Q8_0;
+        *stride = rb;
+        return 1;
+    case PG_TENSOR_TYPE_Q4_K:
+        rb = pg_q4_k_row_bytes(cols);
+        if (!rb || !checked_mul_size(rows, rb, &expected) ||
+            t->nbytes != expected)
+            return 0;
+        *type = PG_MAT_Q4_K;
+        *stride = rb;
+        return 1;
+    default:
+        return 0;
+    }
 }
 
 static const float *load_vec(const PgModelFile *file, const char *name,
@@ -270,20 +312,24 @@ static const float *load_vec(const PgModelFile *file, const char *name,
 }
 
 static int load_mat(const PgModelFile *file, const char *name,
-                    size_t rows, size_t cols, PgMatF32 *mat,
+                    size_t rows, size_t cols, PgMat *mat,
                     char *err, size_t err_len)
 {
     const PgTensorView *t = pg_model_file_find_tensor(file, name, strlen(name));
+    PgMatType type;
+    size_t stride;
 
-    if (!tensor_is_f32_mat(t, rows, cols)) {
+    if (!tensor_mat_stride(t, rows, cols, &type, &stride)) {
         set_err(err, err_len,
-                "missing or unsupported f32 matrix tensor '%s' (%zux%zu)",
+                "missing or unsupported matrix tensor '%s' (%zux%zu)",
                 name, rows, cols);
         return -1;
     }
-    mat->data = (const float *)t->data;
+    mat->data = t->data;
     mat->rows = rows;
     mat->cols = cols;
+    mat->stride = stride;
+    mat->type = type;
     return 0;
 }
 
@@ -407,7 +453,7 @@ static int parse_config(PgLlamaModel *m, char *err, size_t err_len)
 
 static int load_tensors(PgLlamaModel *m, char *err, size_t err_len)
 {
-    PgMatF32 embd;
+    PgMat embd;
     size_t i;
 
     m->vocab = pg_tokenizer_vocab_size(m->tokenizer);
@@ -418,13 +464,11 @@ static int load_tensors(PgLlamaModel *m, char *err, size_t err_len)
     if (load_mat(m->file, "token_embd.weight", m->vocab, m->n_embd,
                  &embd, err, err_len) != 0)
         return -1;
-    m->token_embd = embd.data;
+    m->token_embd = embd;
 
     if (load_mat(m->file, "output.weight", m->vocab, m->n_embd,
                  &m->output, NULL, 0) != 0) {
-        m->output.data = m->token_embd;
-        m->output.rows = m->vocab;
-        m->output.cols = m->n_embd;
+        m->output = m->token_embd;
     }
     m->output_norm = load_vec(m->file, "output_norm.weight",
                               m->n_embd, err, err_len);
@@ -468,6 +512,8 @@ PgLlamaModel *pg_llama_model_load(const char *path, char *err, size_t err_len)
 
     cpu_flags = pg_get_cpu_flags();
     pg_gemv_dsp_init(&m->gemv, cpu_flags);
+    pg_qgemv_dsp_init(&m->qgemv, cpu_flags);
+    pg_fp16_dsp_init(&m->fp16, cpu_flags);
     pg_dot_dsp_init(&m->dot, cpu_flags);
     pg_axpy_dsp_init(&m->axpy, cpu_flags);
     pg_rmsnorm_dsp_init(&m->rmsnorm, cpu_flags);
@@ -523,6 +569,11 @@ static float *alloc_f32(size_t n)
     return calloc(n ? n : 1, sizeof(float));
 }
 
+static pg_fp16 *alloc_fp16(size_t n)
+{
+    return calloc(n ? n : 1, sizeof(pg_fp16));
+}
+
 static int alloc_context_buffers(PgLlamaContext *ctx, char *err, size_t err_len)
 {
     const PgLlamaModel *m = ctx->model;
@@ -536,8 +587,8 @@ static int alloc_context_buffers(PgLlamaContext *ctx, char *err, size_t err_len)
         return -1;
     }
 
-    ctx->key_cache = alloc_f32(kv_total);
-    ctx->value_cache = alloc_f32(kv_total);
+    ctx->key_cache = alloc_fp16(kv_total);
+    ctx->value_cache = alloc_fp16(kv_total);
     ctx->x = alloc_f32(m->n_embd);
     ctx->norm = alloc_f32(m->n_embd);
     ctx->q = alloc_f32(m->n_embd);
@@ -550,6 +601,8 @@ static int alloc_context_buffers(PgLlamaContext *ctx, char *err, size_t err_len)
     ctx->ff_hidden = alloc_f32(m->n_ff);
     ctx->scores = alloc_f32(ctx->context_length);
     ctx->probs = alloc_f32(ctx->context_length);
+    ctx->key_head = alloc_f32(m->head_dim);
+    ctx->value_head = alloc_f32(m->head_dim);
     ctx->cos = alloc_f32(half_head);
     ctx->sin = alloc_f32(half_head);
     ctx->logits = alloc_f32(m->vocab);
@@ -557,7 +610,8 @@ static int alloc_context_buffers(PgLlamaContext *ctx, char *err, size_t err_len)
     if (!ctx->key_cache || !ctx->value_cache || !ctx->x || !ctx->norm ||
         !ctx->q || !ctx->k || !ctx->v || !ctx->attn || !ctx->proj ||
         !ctx->ff_gate || !ctx->ff_up || !ctx->ff_hidden ||
-        !ctx->scores || !ctx->probs || !ctx->cos || !ctx->sin || !ctx->logits) {
+        !ctx->scores || !ctx->probs || !ctx->key_head || !ctx->value_head ||
+        !ctx->cos || !ctx->sin || !ctx->logits) {
         set_err(err, err_len, "out of memory");
         return -1;
     }
@@ -611,6 +665,8 @@ void pg_llama_context_free(PgLlamaContext *ctx)
     free(ctx->ff_hidden);
     free(ctx->scores);
     free(ctx->probs);
+    free(ctx->key_head);
+    free(ctx->value_head);
     free(ctx->cos);
     free(ctx->sin);
     free(ctx->logits);
@@ -634,11 +690,68 @@ const PgLlamaProfile *pg_llama_context_profile(const PgLlamaContext *ctx)
     return ctx ? &ctx->profile : NULL;
 }
 
-static float *cache_ptr(float *base, const PgLlamaContext *ctx,
-                        size_t layer, size_t pos)
+static pg_fp16 *cache_ptr(pg_fp16 *base, const PgLlamaContext *ctx,
+                          size_t layer, size_t pos)
 {
     const PgLlamaModel *m = ctx->model;
     return base + (layer * ctx->context_length + pos) * m->kv_dim;
+}
+
+static const void *mat_row_ptr(const PgMat *a, size_t row)
+{
+    if (a->type == PG_MAT_F32)
+        return (const float *)a->data + row * a->stride;
+    return (const unsigned char *)a->data + row * a->stride;
+}
+
+static float llama_mat_dot(const PgLlamaModel *m, const PgMat *a,
+                           size_t row, const float *x)
+{
+    const void *rp = mat_row_ptr(a, row);
+
+    switch (a->type) {
+    case PG_MAT_F32:
+        return m->dot.dot_f32((const float *)rp, x, a->cols);
+    case PG_MAT_Q8_0:
+        return m->qgemv.q8_0_dot(rp, x, a->cols);
+    case PG_MAT_Q4_K:
+        return m->qgemv.q4_k_dot(rp, x, a->cols);
+    default:
+        return 0.0f;
+    }
+}
+
+static void llama_mat_dot_range(const PgLlamaModel *m, const PgMat *a,
+                                const float *x, float *y,
+                                size_t begin, size_t end)
+{
+    for (size_t r = begin; r < end; r++)
+        y[r] = llama_mat_dot(m, a, r, x);
+}
+
+static void llama_mat_dot_add_range(const PgLlamaModel *m, const PgMat *a,
+                                    const float *x, float *y,
+                                    size_t begin, size_t end)
+{
+    for (size_t r = begin; r < end; r++)
+        y[r] += llama_mat_dot(m, a, r, x);
+}
+
+static void llama_matvec(const PgLlamaModel *m, const PgMat *a,
+                         const float *x, float *y)
+{
+    switch (a->type) {
+    case PG_MAT_F32:
+        m->gemv.sgemv(a->rows, a->cols, (const float *)a->data,
+                      a->stride, x, y);
+        break;
+    case PG_MAT_Q8_0:
+        m->qgemv.q8_0(a->rows, a->cols, a->data, a->stride, x, y);
+        break;
+    case PG_MAT_Q4_K:
+        m->qgemv.q4_k(a->rows, a->cols, a->data, a->stride, x, y);
+        break;
+    }
 }
 
 static void gemv_pair_task(void *vctx, size_t begin, size_t end)
@@ -648,16 +761,12 @@ static void gemv_pair_task(void *vctx, size_t begin, size_t end)
     size_t a_rows = job->a->rows;
     size_t a_end = end < a_rows ? end : a_rows;
 
-    for (size_t r = begin; r < a_end; r++)
-        job->ya[r] = m->dot.dot_f32(job->a->data + r * job->a->cols,
-                                    job->x, job->a->cols);
+    llama_mat_dot_range(m, job->a, job->x, job->ya, begin, a_end);
     if (end > a_rows) {
         size_t b_begin = begin > a_rows ? begin - a_rows : 0;
         size_t b_end = end - a_rows;
 
-        for (size_t r = b_begin; r < b_end; r++)
-            job->yb[r] = m->dot.dot_f32(job->b->data + r * job->b->cols,
-                                        job->x, job->b->cols);
+        llama_mat_dot_range(m, job->b, job->x, job->yb, b_begin, b_end);
     }
 }
 
@@ -669,24 +778,18 @@ static void gemv_triple_task(void *vctx, size_t begin, size_t end)
     size_t ab_rows = a_rows + job->b->rows;
     size_t a_end = end < a_rows ? end : a_rows;
 
-    for (size_t r = begin; r < a_end; r++)
-        job->ya[r] = m->dot.dot_f32(job->a->data + r * job->a->cols,
-                                    job->x, job->a->cols);
+    llama_mat_dot_range(m, job->a, job->x, job->ya, begin, a_end);
     if (end > a_rows) {
         size_t b_begin = begin > a_rows ? begin - a_rows : 0;
         size_t b_end = end < ab_rows ? end - a_rows : job->b->rows;
 
-        for (size_t r = b_begin; r < b_end; r++)
-            job->yb[r] = m->dot.dot_f32(job->b->data + r * job->b->cols,
-                                        job->x, job->b->cols);
+        llama_mat_dot_range(m, job->b, job->x, job->yb, b_begin, b_end);
     }
     if (end > ab_rows) {
         size_t c_begin = begin > ab_rows ? begin - ab_rows : 0;
         size_t c_end = end - ab_rows;
 
-        for (size_t r = c_begin; r < c_end; r++)
-            job->yc[r] = m->dot.dot_f32(job->c->data + r * job->c->cols,
-                                        job->x, job->c->cols);
+        llama_mat_dot_range(m, job->c, job->x, job->yc, c_begin, c_end);
     }
 }
 
@@ -695,13 +798,11 @@ static void gemv_add_task(void *vctx, size_t begin, size_t end)
     PgGemvAddJob *job = vctx;
     const PgLlamaModel *m = job->model;
 
-    for (size_t r = begin; r < end; r++)
-        job->y[r] += m->dot.dot_f32(job->a->data + r * job->a->cols,
-                                    job->x, job->a->cols);
+    llama_mat_dot_add_range(m, job->a, job->x, job->y, begin, end);
 }
 
-static void llama_gemv_pair(PgLlamaContext *ctx, const PgMatF32 *a,
-                            const PgMatF32 *b, const float *x,
+static void llama_gemv_pair(PgLlamaContext *ctx, const PgMat *a,
+                            const PgMat *b, const float *x,
                             float *ya, float *yb)
 {
     PgGemvPairJob job = { ctx->model, a, b, x, ya, yb };
@@ -711,8 +812,8 @@ static void llama_gemv_pair(PgLlamaContext *ctx, const PgMatF32 *a,
                     gemv_pair_task, &job);
 }
 
-static void llama_gemv_triple(PgLlamaContext *ctx, const PgMatF32 *a,
-                              const PgMatF32 *b, const PgMatF32 *c,
+static void llama_gemv_triple(PgLlamaContext *ctx, const PgMat *a,
+                              const PgMat *b, const PgMat *c,
                               const float *x, float *ya, float *yb, float *yc)
 {
     PgGemvTripleJob job = { ctx->model, a, b, c, x, ya, yb, yc };
@@ -722,8 +823,8 @@ static void llama_gemv_triple(PgLlamaContext *ctx, const PgMatF32 *a,
                     gemv_triple_task, &job);
 }
 
-static void llama_gemv_add(const PgLlamaModel *m, const PgMatF32 *a,
-                           const float *x, float *y)
+static void llama_matvec_add(const PgLlamaModel *m, const PgMat *a,
+                             const float *x, float *y)
 {
     if (a->cols >= 1024) {
         PgGemvAddJob job = { m, a, x, y };
@@ -732,16 +833,15 @@ static void llama_gemv_add(const PgLlamaModel *m, const PgMatF32 *a,
                         gemv_add_task, &job);
         return;
     }
-    for (size_t r = 0; r < a->rows; r++)
-        y[r] += m->dot.dot_f32(a->data + r * a->cols, x, a->cols);
+    llama_mat_dot_add_range(m, a, x, y, 0, a->rows);
 }
 
 static int eval_layer(PgLlamaContext *ctx, size_t layer_idx)
 {
     const PgLlamaModel *m = ctx->model;
     const PgLlamaLayer *l = &m->layers[layer_idx];
-    float *k_slot;
-    float *v_slot;
+    pg_fp16 *k_slot;
+    pg_fp16 *v_slot;
     float scale = 1.0f / sqrtf((float)m->head_dim);
     size_t group = m->n_head / m->n_head_kv;
     size_t h;
@@ -765,8 +865,8 @@ static int eval_layer(PgLlamaContext *ctx, size_t layer_idx)
 
     k_slot = cache_ptr(ctx->key_cache, ctx, layer_idx, ctx->pos);
     v_slot = cache_ptr(ctx->value_cache, ctx, layer_idx, ctx->pos);
-    memcpy(k_slot, ctx->k, m->kv_dim * sizeof(float));
-    memcpy(v_slot, ctx->v, m->kv_dim * sizeof(float));
+    m->fp16.from_f32(k_slot, ctx->k, m->kv_dim);
+    m->fp16.from_f32(v_slot, ctx->v, m->kv_dim);
     PROFILE_ADD(ctx, rope_sec, t0);
 
     memset(ctx->attn, 0, m->n_embd * sizeof(float));
@@ -778,9 +878,12 @@ static int eval_layer(PgLlamaContext *ctx, size_t layer_idx)
 
         t0 = PROFILE_BEGIN(ctx);
         for (t = 0; t <= ctx->pos; t++) {
-            const float *kh = cache_ptr(ctx->key_cache, ctx, layer_idx, t) +
-                              kv_h * m->head_dim;
-            ctx->scores[t] = m->dot.dot_f32(qh, kh, m->head_dim) * scale;
+            const pg_fp16 *kh = cache_ptr(ctx->key_cache, ctx, layer_idx, t) +
+                                kv_h * m->head_dim;
+
+            m->fp16.to_f32(ctx->key_head, kh, m->head_dim);
+            ctx->scores[t] = m->dot.dot_f32(qh, ctx->key_head,
+                                            m->head_dim) * scale;
         }
         PROFILE_ADD(ctx, attn_scores_sec, t0);
 
@@ -790,16 +893,18 @@ static int eval_layer(PgLlamaContext *ctx, size_t layer_idx)
 
         t0 = PROFILE_BEGIN(ctx);
         for (t = 0; t <= ctx->pos; t++) {
-            const float *vh = cache_ptr(ctx->value_cache, ctx, layer_idx, t) +
-                              kv_h * m->head_dim;
-            m->axpy.axpy_f32(ctx->probs[t], vh, out_h, m->head_dim);
+            const pg_fp16 *vh = cache_ptr(ctx->value_cache, ctx, layer_idx, t) +
+                                kv_h * m->head_dim;
+
+            m->fp16.to_f32(ctx->value_head, vh, m->head_dim);
+            m->axpy.axpy_f32(ctx->probs[t], ctx->value_head,
+                             out_h, m->head_dim);
         }
         PROFILE_ADD(ctx, attn_mix_sec, t0);
     }
 
     t0 = PROFILE_BEGIN(ctx);
-    m->gemv.sgemv(l->o.rows, l->o.cols, l->o.data, l->o.cols,
-                  ctx->attn, ctx->proj);
+    llama_matvec(m, &l->o, ctx->attn, ctx->proj);
     PROFILE_ADD(ctx, attn_output_sec, t0);
 
     t0 = PROFILE_BEGIN(ctx);
@@ -823,9 +928,28 @@ static int eval_layer(PgLlamaContext *ctx, size_t layer_idx)
     PROFILE_ADD(ctx, ffn_act_sec, t0);
 
     t0 = PROFILE_BEGIN(ctx);
-    llama_gemv_add(m, &l->down, ctx->ff_gate, ctx->x);
+    llama_matvec_add(m, &l->down, ctx->ff_gate, ctx->x);
     PROFILE_ADD(ctx, ffn_down_sec, t0);
     return 0;
+}
+
+static void llama_load_token_embedding(const PgLlamaModel *m, int32_t token,
+                                       float *dst)
+{
+    const PgMat *embd = &m->token_embd;
+    const void *row = mat_row_ptr(embd, (size_t)token);
+
+    switch (embd->type) {
+    case PG_MAT_F32:
+        memcpy(dst, row, m->n_embd * sizeof(float));
+        break;
+    case PG_MAT_Q8_0:
+        pg_q8_0_dequant_row(row, dst, m->n_embd);
+        break;
+    case PG_MAT_Q4_K:
+        pg_q4_k_dequant_row(row, dst, m->n_embd);
+        break;
+    }
 }
 
 int pg_llama_eval_token(PgLlamaContext *ctx, int32_t token,
@@ -859,8 +983,7 @@ int pg_llama_eval_token(PgLlamaContext *ctx, int32_t token,
     {
         double t0 = PROFILE_BEGIN(ctx);
 
-        memcpy(ctx->x, m->token_embd + (size_t)token * m->n_embd,
-               m->n_embd * sizeof(float));
+        llama_load_token_embedding(m, token, ctx->x);
         PROFILE_ADD(ctx, token_embed_sec, t0);
     }
     {
@@ -889,8 +1012,7 @@ int pg_llama_eval_token(PgLlamaContext *ctx, int32_t token,
     {
         double t0 = PROFILE_BEGIN(ctx);
 
-        m->gemv.sgemv(m->output.rows, m->output.cols, m->output.data,
-                      m->output.cols, ctx->norm, ctx->logits);
+        llama_matvec(m, &m->output, ctx->norm, ctx->logits);
         PROFILE_ADD(ctx, logits_sec, t0);
     }
 

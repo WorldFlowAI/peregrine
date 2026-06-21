@@ -42,6 +42,8 @@ typedef enum PgTensorType {
     PG_TENSOR_TYPE_BF16,
     PG_TENSOR_TYPE_F32,
     PG_TENSOR_TYPE_F64,
+    PG_TENSOR_TYPE_Q8_0,
+    PG_TENSOR_TYPE_Q4_K,
 } PgTensorType;
 
 typedef enum PgMetadataType {

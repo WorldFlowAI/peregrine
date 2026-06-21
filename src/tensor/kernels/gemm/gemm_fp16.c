@@ -35,6 +35,62 @@ float pg_fp16_to_f32(pg_fp16 h)
     return f;
 }
 
+pg_fp16 pg_f32_to_fp16(float f)
+{
+    uint32_t bits;
+    uint32_t sign;
+    uint32_t exp;
+    uint32_t mant;
+    int half_exp;
+
+    memcpy(&bits, &f, sizeof bits);
+    sign = (bits >> 16) & 0x8000u;
+    exp = (bits >> 23) & 0xffu;
+    mant = bits & 0x7fffffu;
+
+    if (exp == 0xffu) {
+        if (mant)
+            return (pg_fp16)(sign | 0x7e00u);
+        return (pg_fp16)(sign | 0x7c00u);
+    }
+    if (exp > 142u)
+        return (pg_fp16)(sign | 0x7c00u);
+    half_exp = (int)exp - 112;
+    if (half_exp <= 0) {
+        uint32_t rem;
+        uint32_t halfway;
+        uint32_t shift;
+        uint32_t half_mant;
+
+        if (half_exp < -10)
+            return (pg_fp16)sign;
+        mant |= 0x800000u;
+        shift = (uint32_t)(14 - half_exp);
+        half_mant = mant >> shift;
+        rem = mant & ((1u << shift) - 1u);
+        halfway = 1u << (shift - 1u);
+        if (rem > halfway || (rem == halfway && (half_mant & 1u)))
+            half_mant++;
+        return (pg_fp16)(sign | half_mant);
+    }
+
+    {
+        uint32_t half_mant = mant >> 13;
+        uint32_t rem = mant & 0x1fffu;
+
+        if (rem > 0x1000u || (rem == 0x1000u && (half_mant & 1u))) {
+            half_mant++;
+            if (half_mant == 0x400u) {
+                half_mant = 0;
+                half_exp++;
+            }
+        }
+        if (half_exp >= 31)
+            return (pg_fp16)(sign | 0x7c00u);
+        return (pg_fp16)(sign | ((uint32_t)half_exp << 10) | half_mant);
+    }
+}
+
 void pg_fp16_pack_a(float *restrict dst, const void *srcv, size_t lda,
                     size_t ib, size_t K, size_t mr)
 {

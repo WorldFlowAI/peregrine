@@ -13,6 +13,10 @@
 #include <string.h>
 
 #define GGUF_DEFAULT_ALIGNMENT 32u
+#define GGUF_Q8_0_BLOCK 32u
+#define GGUF_Q8_0_BLOCK_BYTES 34u
+#define GGUF_Q4_K_BLOCK 256u
+#define GGUF_Q4_K_BLOCK_BYTES 144u
 
 struct PgModelFile {
     PgModelFormat format;
@@ -99,6 +103,26 @@ static bool tensor_nbytes(PgTensorType type, unsigned n_dims,
     size_t elem_size = pg_tensor_type_size(type);
     size_t count = 1;
     unsigned i;
+
+    if (type == PG_TENSOR_TYPE_Q8_0 || type == PG_TENSOR_TYPE_Q4_K) {
+        size_t block = type == PG_TENSOR_TYPE_Q8_0 ?
+                       GGUF_Q8_0_BLOCK : GGUF_Q4_K_BLOCK;
+        size_t block_bytes = type == PG_TENSOR_TYPE_Q8_0 ?
+                             GGUF_Q8_0_BLOCK_BYTES : GGUF_Q4_K_BLOCK_BYTES;
+        size_t cols, rows, row_blocks, row_bytes;
+
+        if (n_dims != 2 || dims[0] == 0 || dims[1] == 0 ||
+            dims[0] > SIZE_MAX || dims[1] > SIZE_MAX)
+            return false;
+        cols = (size_t)dims[0];
+        rows = (size_t)dims[1];
+        if (cols % block != 0)
+            return false;
+        row_blocks = cols / block;
+        if (!checked_mul_size(row_blocks, block_bytes, &row_bytes))
+            return false;
+        return checked_mul_size(rows, row_bytes, nbytes);
+    }
 
     if (elem_size == 0)
         return false;
@@ -476,6 +500,8 @@ static PgTensorType gguf_tensor_type(uint32_t type)
     switch (type) {
     case 0:  return PG_TENSOR_TYPE_F32;
     case 1:  return PG_TENSOR_TYPE_F16;
+    case 8:  return PG_TENSOR_TYPE_Q8_0;
+    case 12: return PG_TENSOR_TYPE_Q4_K;
     case 24: return PG_TENSOR_TYPE_I8;
     case 25: return PG_TENSOR_TYPE_I16;
     case 26: return PG_TENSOR_TYPE_I32;
@@ -1286,6 +1312,8 @@ const char *pg_tensor_type_name(PgTensorType type)
     case PG_TENSOR_TYPE_BF16: return "bf16";
     case PG_TENSOR_TYPE_F32: return "f32";
     case PG_TENSOR_TYPE_F64: return "f64";
+    case PG_TENSOR_TYPE_Q8_0: return "q8_0";
+    case PG_TENSOR_TYPE_Q4_K: return "q4_k";
     default: return "unknown";
     }
 }

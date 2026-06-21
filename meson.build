@@ -72,6 +72,11 @@ c_sources = files(
   'src/tensor/kernels/gemv/gemv_ref.c',
   'src/tensor/kernels/gemv/gemv_init.c',
   'src/tensor/kernels/gemv/gemv_driver.c',
+  'src/tensor/kernels/fp16/fp16_ref.c',
+  'src/tensor/kernels/fp16/fp16_init.c',
+  'src/tensor/kernels/qgemv/qgemv_ref.c',
+  'src/tensor/kernels/qgemv/qgemv_init.c',
+  'src/tensor/kernels/qgemv/qgemv_driver.c',
   'src/tensor/kernels/gemm/gemm_bf16.c',
   'src/tensor/kernels/gemm/gemm_bf16_init.c',
   'src/tensor/kernels/gemm/gemm_fp16.c',
@@ -120,12 +125,16 @@ elif target_arm
     'src/tensor/kernels/gemm/arm/sgemm_ukernel_neon.S',
     'src/tensor/kernels/gemm/gemm_neon.c',
     'src/tensor/kernels/gemv/gemv_neon.c',
+    'src/tensor/kernels/qgemv/qgemv_neon.c',
+    'src/tensor/kernels/qgemv/arm/q8_0_dot_neon.S',
+    'src/tensor/kernels/qgemv/arm/q8_0_gemv_neon.S',
     'src/tensor/kernels/gemm/gemm_bf16_neon.c',
     'src/tensor/kernels/gemm/gemm_bf16_mmla.c',
     'src/tensor/kernels/gemm/arm/bf16gemm_ukernel_neon.S',
     'src/tensor/kernels/gemm/gemm_fp16_neon.c',
     'src/tensor/kernels/gemm/gemm_fp16_f16.c',
     'src/tensor/kernels/gemm/arm/fp16gemm_ukernel_neon.S',
+    'src/tensor/kernels/fp16/arm/fp16_convert_neon.S',
   )
 endif
 
