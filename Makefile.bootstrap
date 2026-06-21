@@ -50,6 +50,11 @@ C_SRC := \
   src/tensor/kernels/gemv/gemv_ref.c \
   src/tensor/kernels/gemv/gemv_init.c \
   src/tensor/kernels/gemv/gemv_driver.c \
+  src/tensor/kernels/fp16/fp16_ref.c \
+  src/tensor/kernels/fp16/fp16_init.c \
+  src/tensor/kernels/qgemv/qgemv_ref.c \
+  src/tensor/kernels/qgemv/qgemv_init.c \
+  src/tensor/kernels/qgemv/qgemv_driver.c \
   src/tensor/kernels/gemm/gemm_bf16.c \
   src/tensor/kernels/gemm/gemm_bf16_init.c \
   src/tensor/kernels/gemm/gemm_fp16.c \
@@ -79,12 +84,16 @@ ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
     src/tensor/kernels/gemm/gemm_neon.o \
     src/tensor/kernels/gemm/arm/sgemm_ukernel_neon.o \
     src/tensor/kernels/gemv/gemv_neon.o \
+    src/tensor/kernels/qgemv/qgemv_neon.o \
+    src/tensor/kernels/qgemv/arm/q8_0_dot_neon.o \
+    src/tensor/kernels/qgemv/arm/q8_0_gemv_neon.o \
     src/tensor/kernels/gemm/gemm_bf16_neon.o \
     src/tensor/kernels/gemm/gemm_bf16_mmla.o \
     src/tensor/kernels/gemm/arm/bf16gemm_ukernel_neon.o \
     src/tensor/kernels/gemm/gemm_fp16_neon.o \
     src/tensor/kernels/gemm/gemm_fp16_f16.o \
-    src/tensor/kernels/gemm/arm/fp16gemm_ukernel_neon.o
+    src/tensor/kernels/gemm/arm/fp16gemm_ukernel_neon.o \
+    src/tensor/kernels/fp16/arm/fp16_convert_neon.o
   CHECK_ASM := tests/checkasm/arm/checkasm.S
 %.o: %.S
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -142,6 +151,8 @@ CHECK_SRC := \
   tests/checkasm/checkasm_exp.c \
   tests/checkasm/checkasm_gemm.c \
   tests/checkasm/checkasm_gemv.c \
+  tests/checkasm/checkasm_qgemv.c \
+  tests/checkasm/checkasm_fp16.c \
   tests/checkasm/checkasm_gemm_bf16.c \
   tests/checkasm/checkasm_gemm_fp16.c
 

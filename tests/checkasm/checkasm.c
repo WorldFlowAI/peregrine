@@ -35,6 +35,8 @@ static const struct {
     { "exp",     checkasm_check_exp },
     { "gemm",    checkasm_check_gemm },
     { "gemv",    checkasm_check_gemv },
+    { "qgemv",   checkasm_check_qgemv },
+    { "fp16",    checkasm_check_fp16 },
     { "gemm_bf16", checkasm_check_gemm_bf16 },
     { "gemm_fp16", checkasm_check_gemm_fp16 },
 };

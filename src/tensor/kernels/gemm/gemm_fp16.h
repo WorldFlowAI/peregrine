@@ -36,6 +36,7 @@ void pg_fp16gemm_dsp_init(PgFp16GemmDSP *dsp, unsigned cpu_flags);
 const PgFp16GemmVariant *pg_fp16gemm_variants(size_t *count);
 
 float pg_fp16_to_f32(pg_fp16 h);
+pg_fp16 pg_f32_to_fp16(float f);
 
 void pg_fp16gemm_c(size_t M, size_t N, size_t K,
                    const pg_fp16 *A, size_t lda,
